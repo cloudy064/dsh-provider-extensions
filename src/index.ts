@@ -32,11 +32,29 @@ export function apply(ctx: Context, config: Config = {}): void {
   });
   // Keep a dormant directory entry for the native Provider dropdown. The
   // optional profile gives the native UI a concrete add/delete address.
-  ctx.llm.registerConfigurableProviders([{ provider: PROVIDER, displayName: PROVIDER, settingsNs: name, settingsPath: ['profile'] }, { provider: 'commandcode', displayName: 'commandcode', settingsNs: name, settingsPath: ['commandcode'] }]);
+  const clineEntry = { provider: PROVIDER, displayName: PROVIDER, settingsNs: name, settingsPath: ['profile'] };
+  const commandEntry = { provider: 'commandcode', displayName: 'commandcode', settingsNs: name, settingsPath: ['commandcode'] };
+  const directory = ctx.llm.registerConfigurableProviders([clineEntry]);
+  let commandDirectory = '';
+  let nativeDirectoryOwned = false;
   let registration: AdapterRegistrationHandle | undefined;
   let commandRegistration: AdapterRegistrationHandle | undefined;
   const syncRoute = () => {
-    if (current().commandcode !== undefined) {
+    const native = ctx.get('settings')?.get('llm-pi-ai') as { providers?: Record<string, { displayName?: string }> } | undefined;
+    const custom = native?.providers?.commandcode;
+    const foreign = ctx.llm.listConfigurableProviders().some(entry => entry.provider === 'commandcode' && entry.settingsNs !== name) && !nativeDirectoryOwned;
+    const offerCommand = !custom && !foreign;
+    // Older hosts do not put custom routes in the directory. Point their row
+    // back to the native settings address instead of shadowing it with ours.
+    const entries = custom && !foreign ? [clineEntry, { ...commandEntry, displayName: custom.displayName || 'commandcode', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'commandcode'], declared: true }]
+      : offerCommand ? [clineEntry, commandEntry] : [clineEntry];
+    const facts = JSON.stringify(entries);
+    if (facts !== commandDirectory) {
+      directory.replace(entries);
+      nativeDirectoryOwned = !!custom && !foreign;
+      commandDirectory = facts;
+    }
+    if (offerCommand && current().commandcode !== undefined) {
       validateCommandCode(current().commandcode!);
       if (commandRegistration) commandRegistration.replace(['commandcode']);
       else commandRegistration = ctx.llm.registerAdapter(['commandcode'], commandAdapter);
@@ -52,10 +70,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   syncRoute();
   ctx.llm.registerModelDiscovery(name, (request, signal) => request.provider === 'commandcode' ? discoverCommandCode(fetch, signal) : discoverCatalog(fetch, signal));
   ctx.inject(['settings'], settingsCtx => {
+    settingsCtx.on('settings/updated', ns => { if (ns === 'llm-pi-ai') syncRoute(); });
     settingsCtx.settings.installSection(ctx, name, Config, config, {
       setSource: source => { current = source; },
       onChange: syncRoute,
       validate: value => { resolveConfig(value); if (value.commandcode) validateCommandCode(value.commandcode); },
     });
+    syncRoute();
   });
 }

@@ -31,6 +31,41 @@ test('commandcode is dormant by default and can be added/deleted independently',
   } finally { await ctx.fiber.dispose(); }
 });
 
+test('existing commandcode directory remains owned by the custom provider', async () => {
+  const ctx = new Context();
+  try {
+    await ctx.plugin(LlmRuntime).await();
+    const existing = { provider: 'commandcode', displayName: 'My Command Code', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'commandcode'], declared: true };
+    ctx.llm.registerConfigurableProviders([existing]);
+    const fork = ctx.plugin(plugin, { commandcode: { models: [{ id: 'plugin-model' }] } });
+    await fork.await();
+    assert.deepEqual(ctx.llm.listConfigurableProviders().find(p => p.provider === 'commandcode'), existing);
+    assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'commandcode'));
+    assert.ok(ctx.llm.listConfigurableProviders().some(p => p.provider === 'cline-pass'));
+    await fork.dispose();
+    assert.deepEqual(ctx.llm.listConfigurableProviders(), [existing]);
+  } finally { await ctx.fiber.dispose(); }
+});
+
+test('older hosts retain custom commandcode settings even without a directory entry', async () => {
+  const ctx = new Context();
+  const native = { providers: { commandcode: { displayName: 'Existing gateway', models: [{ id: 'custom-model' }] } } };
+  const before = structuredClone(native);
+  try {
+    await ctx.plugin(LlmRuntime).await();
+    ctx.provide('settings');
+    ctx.set('settings', { get: ns => ns === 'llm-pi-ai' ? native : undefined, installSection() {} });
+    const fork = ctx.plugin(plugin, { commandcode: { models: [{ id: 'plugin-model' }] } });
+    await fork.await();
+    const row = ctx.llm.listConfigurableProviders().find(p => p.provider === 'commandcode');
+    assert.equal(row.settingsNs, 'llm-pi-ai');
+    assert.deepEqual(row.settingsPath, ['providers', 'commandcode']);
+    assert.equal(row.displayName, 'Existing gateway');
+    assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'commandcode'));
+    assert.deepEqual(native, before);
+  } finally { await ctx.fiber.dispose(); }
+});
+
 test('commandcode streams OpenAI and Claude through their separate endpoints', async () => {
   const received = [];
   const server = createServer(async (req, res) => {

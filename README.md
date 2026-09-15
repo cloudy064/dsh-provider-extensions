@@ -45,6 +45,8 @@ node ~/.dsh/profiles/web/node_modules/dsh-provider-extensions/scripts/install-mo
 
 卸载：`dsh plugin --profile web remove dsh-provider-extensions`，然后重启 DSH。
 
+已有 `llm-pi-ai.providers.commandcode` 自定义配置时，插件保留原生配置入口和路由，不再用自己的同名条目遮蔽它。旧版宿主缺少自定义目录条目时，补充指向原配置的条目；不迁移或改写配置和密钥。
+
 ## 配置
 
 推荐使用 **设置 → 模型（Models）→ 添加提供方 → cline-pass**，通过 GUI 配置：
