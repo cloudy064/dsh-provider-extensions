@@ -1,0 +1,3 @@
+- insert:
+    - id: llm-cline-pass
+      name: dsh-provider-extensions

@@ -1,0 +1,19 @@
+# Merge this section into your DSH settings.yaml, or edit it via DSH Settings.
+# Keys belong in DSH's credential store, not this file.
+llm-cline-pass:
+  profile:
+    apiKeyEnv: CLINEPASS_API_KEY
+    routing: sticky
+    diagnostics: true
+    timeoutMs: 300000
+    # Empty list uses Cline's live clinePass catalog, cached for five minutes.
+    models: []
+    # Optional manual catalog/limits (replace models above):
+    # models:
+    #   - id: cline-pass/deepseek-v4-flash
+    #     name: DeepSeek V4 Flash (ClinePass)
+    #     contextWindow: 1000000
+    #     maxTokens: 8192
+    # Experimental routing; effectiveness must be tested against ClinePass:
+    # routing: experimental-pin
+    # upstream: EXACT_UPSTREAM_SLUG
