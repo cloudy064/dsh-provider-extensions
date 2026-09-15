@@ -33,6 +33,14 @@ dsh plugin --profile web add ./dsh-provider-extensions-0.6.1.tgz
 
 安装命令会修改 DSH 的 web profile。安装后重启 DSH。当前 DSH 0.1.5-rc.1 的 Models 编辑器没有替换接口，兼容脚本为它补充 `settings.models.provider-editor` 插槽，仅接管本插件表单；提供方目录、添加、折叠和删除仍由宿主管理。脚本检查版本与源码结构，原文件备份为 `client.js.cline-pass-original`；宿主升级后需要重新核对兼容性。发布包包含编译结果；请安装 tgz，勿直接链接开发目录。
 
+通过 Git 插件管理器安装时，构建步骤不会自动运行宿主兼容脚本。添加列表的字母排序和自定义编辑表单都由该脚本提供；安装后需执行一次，支持 Models `0.1.5-rc.1` / `0.1.5-rc.2`，宿主升级后需重新应用。Linux 默认 web 配置可运行：
+
+```sh
+node ~/.dsh/profiles/web/node_modules/dsh-provider-extensions/scripts/install-models-compat.mjs
+```
+
+自定义配置可把 Profile 目录作为参数传入；脚本从该目录解析宿主模块，校验源码结构后才修改，并保留原文件备份。应用后刷新 Harness 页面。
+
 在 Models 的添加提供方下拉菜单中选择 **cline-pass**，填写 Cline API Key。密钥保存到宿主凭据存储，无需设置环境变量；也兼容启动环境中的 `CLINEPASS_API_KEY`。账号需有有效订阅。本版不包含 OAuth 登录。
 
 卸载：`dsh plugin --profile web remove dsh-provider-extensions`，然后重启 DSH。

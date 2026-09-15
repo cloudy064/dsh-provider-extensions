@@ -1,15 +1,18 @@
-// Narrow, reversible compatibility patch for DSH 0.1.5-rc.1's built-in
+// Narrow, reversible compatibility patch for DSH 0.1.5-rc.1/rc.2's built-in
 // Models editor. Directory registration and provider CRUD remain native.
 import { readFile, writeFile, copyFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
-const hostDir = process.argv[2] ?? join(process.env.APPDATA, 'npm/node_modules/@deepseek-ai/dsh');
+import { homedir } from 'node:os';
+const hostDir = process.argv[2] ?? (process.platform === 'win32' && process.env.APPDATA
+  ? join(process.env.APPDATA, 'npm/node_modules/@deepseek-ai/dsh')
+  : join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'profiles/web'));
 const host = createRequire(join(hostDir, 'package.json'));
 const entry = host.resolve('@deepseek-ai/dsh-client-ui-settings-models');
 const file = join(dirname(entry), 'client.js');
 const manifest = JSON.parse(await readFile(join(dirname(entry), '../package.json'), 'utf8'));
-if (manifest.version !== '0.1.5-rc.1') throw new Error('Unsupported Models version; no files changed.');
+if (!['0.1.5-rc.1', '0.1.5-rc.2'].includes(manifest.version)) throw new Error('Unsupported Models version; no files changed.');
 let source = await readFile(file, 'utf8');
 const marker = '// cline-pass provider-editor compatibility v4';
 if (source.includes(marker)) { console.log('Models compatibility already installed.'); process.exit(0); }
