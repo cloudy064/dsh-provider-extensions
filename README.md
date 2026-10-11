@@ -6,7 +6,9 @@
 
 ## 适用 DSH 版本
 
-本版本（0.7.6）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
+本版本（0.7.7）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
+
+0.7.7 修复工具执行后的第二轮请求：保留 DSH 0.2 工具结果消息顶层的 `toolCallId`，发送为 `tool_call_id`，避免 ClinePass 返回 `stream_initialization_failed` / `Tool message must have tool_call_id`。
 
 DSH `0.2.0` 重写了设置与 Models 页的插件接口：宿主端设置接入由 `installSection` 改为 `SettingsForms.configure`，Models 页给外部插件的座位由补丁出来的 `settings.models.provider-editor` 改为按 `settingsNs` 键入的 `settings.models.provider-card`。0.7.0 已完成适配：
 

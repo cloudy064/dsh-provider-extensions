@@ -13,6 +13,14 @@ export function buildRequest(options: GenerateOptions, config: ResolvedConfig): 
   const messages: Record<string, unknown>[] = [];
   if (options.system !== undefined) messages.push({ role: 'system', content: options.system });
   for (const message of options.messages) {
+    // DSH 0.2 stores tool results as messages with a top-level toolCallId.
+    // Preserve the association when replaying them after an assistant tool call.
+    const toolMessage = message as unknown as { role: string; toolCallId?: string };
+    if (toolMessage.role === 'tool') {
+      if (!toolMessage.toolCallId) throw new LlmError('Tool result is missing toolCallId.', 'UNSUPPORTED_CONTENT');
+      messages.push({ role: 'tool', tool_call_id: toolMessage.toolCallId, content: text(message.content) });
+      continue;
+    }
     const results = message.content.filter(b => b.type === 'tool-result');
     if (results.length) {
       if (results.length !== message.content.length) throw new LlmError('Mixed tool-result and text message is unsupported.', 'UNSUPPORTED_CONTENT');

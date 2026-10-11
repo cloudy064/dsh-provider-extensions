@@ -9,6 +9,16 @@ import LlmRuntime from '@deepseek-ai/dsh-llm';
 import * as plugin from '../lib/index.js';
 
 const options = { provider: 'cline-pass', model: 'cline-pass/test', sessionId: 'session-a', messages: [{ id: 'u', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Hello' }] }] };
+test('DSH 0.2 tool messages retain their call IDs on the next model request', () => {
+  const calls = ['call_pwsh', 'call_glob'];
+  const messages = [...options.messages,
+    { role: 'assistant', source: { kind: 'model' }, content: calls.map(id => ({ type: 'tool-call', id, name: 'read', arguments: '{}' })) },
+    ...calls.map((id, index) => ({ role: 'tool', toolCallId: id, source: { kind: 'tool', callId: id }, isError: index === 1, content: [{ type: 'text', text: `result ${index}` }] })),
+  ];
+  const body = buildRequest({ ...options, messages }, resolveConfig());
+  assert.deepEqual(body.messages.slice(-2), calls.map((id, index) => ({ role: 'tool', tool_call_id: id, content: `result ${index}` })));
+  assert.throws(() => buildRequest({ ...options, messages: [{ role: 'tool', content: [] }] }, resolveConfig()), /missing toolCallId/);
+});
 const frame = raw => `data: ${typeof raw === 'string' ? raw : JSON.stringify(raw)}\r\n\r\n`;
 function response(events, fragment = 7) {
   const bytes = new TextEncoder().encode(events.map(frame).join(''));
