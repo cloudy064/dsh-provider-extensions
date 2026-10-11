@@ -4,6 +4,12 @@
 
 包名为 `dsh-provider-extensions`（原 `dsh-plugin-cline-pass`）。从旧包升级时先卸载旧安装项再安装新包，避免重复注册 Provider。为兼容已有配置，内部设置命名空间仍保留 `llm-cline-pass`，配置和密钥无需迁移。
 
+## 适用 DSH 版本
+
+本版本（0.6.1）适用于 DSH `0.1.5-rc.1` 与 `0.1.5-rc.2`，`peerDependencies` 已按这两个版本声明；宿主的安装与 profile 启动会按该声明做兼容检查，其他运行时版本需要显式的精确版本豁免才能挂载。
+
+DSH `0.2.0-rc.2` 的插件接口已经变更，本版本尚未适配：宿主端设置接入由 `installSection` 改为 `SettingsForms`，Models 页给外部插件的座位由补丁出来的 `settings.models.provider-editor` 改为 `settings.models.provider-card`（按 `settingsNs` 键入）。在 0.2.0 上安装虽可用版本豁免放行，但设置区与自定义配置表单不会生效。
+
 ## Command Code
 
 从 0.6.0 起也提供 `commandcode`，与 `cline-pass` 共用原生 Models 配置界面、字母排序及增删流程。API 密钥存于独立的 `COMMANDCODE_API_KEY` 引用，模型可在“自定义设置 → 获取可用模型”中查询和选择。
@@ -14,7 +20,7 @@
 
 参考：[官方 Provider API](https://commandcode.ai/docs/provider)及[协议分流说明](https://commandcode.ai/blog/command-code-provider-api)。模型目录为公开接口，不能证明账号额度或模型访问权限。测试使用本地模拟服务，没有发送真实推理请求。
 
-为 DeepSeek Harness 添加 ClinePass 订阅模型。已针对本机 npm 安装的 `@deepseek-ai/dsh 0.1.5-rc.1` 开发。
+为 DeepSeek Harness 添加 ClinePass 订阅模型。已针对本机 npm 安装的 `@deepseek-ai/dsh 0.1.5-rc.1` 开发，并核对过 `0.1.5-rc.2`。
 
 **订阅推理与上游固定尚未进行真实账户验证。** `sticky` 和 `experimental-pin` 发送路由参数，不代表 ClinePass 服务端一定执行。此版本不会显示“锁定成功”，也不会自动改走其他账号、模型或按量计费路由。
 

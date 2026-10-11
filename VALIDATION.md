@@ -1,5 +1,13 @@
 # 验证记录
 
+## 0.6.1 适用版本标记
+
+日期：2026-10-11。
+
+- `peerDependencies` 由精确 `0.1.5-rc.1` 放宽为 `0.1.5-rc.1 || 0.1.5-rc.2`，两个版本都能通过宿主的安装与 profile 启动兼容检查；README 顶部新增“适用 DSH 版本”一节。
+- 本地 `npm test`：23 项通过，0 失败（全部使用模拟响应，无网络、无密钥）。
+- 与 DSH `0.2.0-rc.2` 的差异已核对，确认本版本尚未适配：宿主端整个 0.2.0 包树中不再存在 `settings.installSection`（设置接入改为 `SettingsForms.configure`），Models 页给外部插件的座位为 `settings.models.provider-card`（按 `settingsNs` 键入），而本版本的 `settings.models.provider-editor` 兼容补丁仅在 `0.1.5-rc.1`/`0.1.5-rc.2` 上生效且宿主已移入 `app.asar`。在 0.2.0 上安装需要版本豁免，设置区与自定义配置表单不会生效。
+
 ## 0.4.0 可选 provider 生命周期
 
 - 安装插件不再强制注册 ClinePass 路由。Models 页提供“添加 ClinePass”入口，添加后才创建配置并注册模型路由。
