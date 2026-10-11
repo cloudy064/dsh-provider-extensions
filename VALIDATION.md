@@ -15,14 +15,17 @@
 | 命令 | 结果 |
 | --- | --- |
 | `npm test` | 24 项通过，0 失败（23 项原有 + 0.2.0 挂载测试） |
-| `node --test test/mount-0.2.test.mjs`（`DSH_MOUNT_HOST_RUNTIME=…\host-runtime`） | 通过，18.9 s：插件 entry `fiber.state === 2`、无 loader 告警、`cline-pass` 已注册、`commandcode` 休眠、两条目录条目 `settingsNs = llm-cline-pass`、`settings.describe()` 发布 `llm-cline-pass:live` 表单、`settings.mutate` 写入被接受且 `entry.fiber.config.profile.get().timeoutMs === 45678`、`entry.fiber.dispose()` 后两条路由与目录条目全部撤销 |
+| `node --test test/mount-0.2.test.mjs`（`DSH_MOUNT_HOST_RUNTIME=…\host-runtime`） | 通过，约 8–19 s：插件 entry `fiber.state === 2`、无 loader 告警、`cline-pass` 已注册、`commandcode` 休眠、两条目录条目 `settingsNs = llm-cline-pass`、`settings.describe()` 发布 `llm-cline-pass:live` 表单、`settings.mutate` 写入被接受且 `entry.fiber.config.profile.get().timeoutMs === 45678`、`entry.fiber.dispose()` 后两条路由与目录条目全部撤销 |
 | `npm run build`（tsc + client 语法检查） | 通过 |
+| `node scripts/gui-0.2-card.mjs`（Playwright + Edge，scratch profile + 真宿主） | 通过：Models 页卡片渲染（`[data-cline-pass-settings]`）、自带的 API 密钥输入框、模型列表增删、**获取可用模型** 按钮；点击后目录返回 14 个可勾选模型，无浏览器错误。截图 `.cache/gui-0.2-card.png` |
+
+浏览器验证细节：卡片在「添加模型提供商 → 提供商 → cline-pass」的草稿形态下渲染（未配置时展开），因此 `summary` 收起/展开只在已保存行出现。验证过程中未写入任何密钥或设置（仅调用 `GET /api/credentials/describe` 与公开模型目录查询）。
 
 未验证 / 不确定：
 
-- **浏览器端卡片未做真实浏览器验证。** 本轮没有在 Chrome/Edge 中打开 Models 页确认卡片渲染与「获取可用模型」交互；卡片的服务契约（座位 props、`configForms` 句柄、`remote.credentials`/`remote.llm` 形状）是按 0.2.0 宿主源码逐条核对的，不是观测到的渲染结果。
-- 未在打包后的 tgz 上重跑挂载测试以外的人工检查；未做真实订阅推理、真实密钥写入或上游固定验证。
-- 设置写入是在临时 profile 的 `cordis.patch.yml` 上完成的，未验证在其他 profile 组合（如 desktop）下的行为。
+- 未验证已保存行的收起形态、点击「应用」后的持久化、取消、恢复默认与删除流程在浏览器中的行为（本轮只验证了渲染与模型发现）。这些路径的宿主契约（`settings.mutate`、`credentials.set`、`cordis.patch.yml` 写入）已由挂载测试覆盖。
+- 未做真实订阅推理、真实密钥写入或上游固定验证；未在打包后的 tgz + GUI 之外做人工检查。
+- 设置写入是在临时 profile 的 `cordis.patch.yml` 上完成的，未验证其他 profile 组合（如 desktop）。
 
 ## 0.6.1 适用版本标记
 

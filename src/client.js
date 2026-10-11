@@ -203,15 +203,21 @@ window.__ModuleLoader__.load({
       const discover = async () => {
         setFetching(true); setNotice('');
         try {
-          const answer = await remote.llm.discoverModels(provider?.settingsNs ?? NS, { provider: provider?.provider });
-          if (answer?.kind !== 'found') { setNotice(answer?.message || t('discoverFailed')); return; }
+          const response = await remote.llm.discoverModels(provider?.settingsNs ?? NS, { provider: provider?.provider });
+          // The remote answers `{ ok, value }`; accept an already-normalized
+          // `{ kind }` reply too so this card survives either caller shape.
+          const answer = response?.kind !== undefined ? response
+            : response?.ok ? { kind: 'found', models: response.value } : { kind: 'refused', message: response?.error?.message };
+          if (answer.kind !== 'found') { setNotice(answer.message || t('discoverFailed')); return; }
           const known = new Set(draft.models.map(model => model.id));
           const offered = (answer.models ?? []).filter(model => model?.id && !known.has(model.id));
           if (offered.length === 0) { setNotice(t('catalogEmpty')); return; }
           setCatalog(offered);
           setChosen(Object.fromEntries(offered.map(model => [model.id, true])));
           setQuery('');
-        } catch { setNotice(t('discoverFailed')); } finally { setFetching(false); }
+        } catch (error) {
+          setNotice(`${t('discoverFailed')} ${error?.message ?? ''}`.trim());
+        } finally { setFetching(false); }
       };
       const addChosen = () => {
         const added = (catalog ?? []).filter(model => chosen[model.id]);

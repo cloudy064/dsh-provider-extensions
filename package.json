@@ -41,6 +41,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:mount": "npm run build && node --test test/mount-0.2.test.mjs",
+    "gui:card": "node scripts/gui-0.2-card.mjs",
     "smoke": "node scripts/smoke.mjs",
     "probe": "node scripts/probe.mjs",
     "prepack": "npm run build"
