@@ -1,5 +1,29 @@
 # 验证记录
 
+## 0.7.0 适配 DSH 0.2.0-rc.2
+
+适配对象：`@deepseek-ai/dsh 0.2.0-rc.2`（本机解出的运行时 `C:\Users\cloudy064\dsh-build\host-runtime`，包树与 Electron `app.asar` 内的 0.2.0-rc.2 一致）。声明范围收敛为只支持该版本；0.1.5-rc.1/rc.2 用户停留在 0.6.1。
+
+宿主端改动：
+
+- `src/index.ts`：设置接入由 `settings.installSection` 改为 0.2.0 的 `ctx.inject(['settings'], child => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)))`；设置命名空间改为 `ctx.fiber.entry.options.id`（回退插件名）；兄弟 entry（`llm-pi-ai`）配置改由 `ctx.get('configEditor').configuration()` 的 `override` 读取（0.2.0 的 `settings` 服务已无 `get(ns)`）。
+- `src/config.ts`：`Config` schema 根节点声明为 volatile，使 Models 页可以写入并在不重挂载的情况下把值提交进运行中的配置引用；新增 `isVolatile`/`unwrapConfig`，所有读取路径先解引用。
+- `src/client.js`：整卡重写，注册进 `settings.models.provider-card`（key = `llm-cline-pass`），自带样式与中英文文案，改用 `ctx.configForms.get(ns)`（`subscribe`/`getSnapshot`/`mutate`）、`ctx.remote.credentials`、`ctx.remote.llm.discoverModels`，并新增「获取可用模型」入口。`settings.models.provider-editor` 的注册与 0.1.5 props 兜底已删除。
+
+实际运行的命令与结果：
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm test` | 24 项通过，0 失败（23 项原有 + 0.2.0 挂载测试） |
+| `node --test test/mount-0.2.test.mjs`（`DSH_MOUNT_HOST_RUNTIME=…\host-runtime`） | 通过，18.9 s：插件 entry `fiber.state === 2`、无 loader 告警、`cline-pass` 已注册、`commandcode` 休眠、两条目录条目 `settingsNs = llm-cline-pass`、`settings.describe()` 发布 `llm-cline-pass:live` 表单、`settings.mutate` 写入被接受且 `entry.fiber.config.profile.get().timeoutMs === 45678`、`entry.fiber.dispose()` 后两条路由与目录条目全部撤销 |
+| `npm run build`（tsc + client 语法检查） | 通过 |
+
+未验证 / 不确定：
+
+- **浏览器端卡片未做真实浏览器验证。** 本轮没有在 Chrome/Edge 中打开 Models 页确认卡片渲染与「获取可用模型」交互；卡片的服务契约（座位 props、`configForms` 句柄、`remote.credentials`/`remote.llm` 形状）是按 0.2.0 宿主源码逐条核对的，不是观测到的渲染结果。
+- 未在打包后的 tgz 上重跑挂载测试以外的人工检查；未做真实订阅推理、真实密钥写入或上游固定验证。
+- 设置写入是在临时 profile 的 `cordis.patch.yml` 上完成的，未验证在其他 profile 组合（如 desktop）下的行为。
+
 ## 0.6.1 适用版本标记
 
 日期：2026-10-11。

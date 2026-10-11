@@ -6,13 +6,19 @@
 
 ## 适用 DSH 版本
 
-本版本（0.6.1）适用于 DSH `0.1.5-rc.1` 与 `0.1.5-rc.2`，`peerDependencies` 已按这两个版本声明；宿主的安装与 profile 启动会按该声明做兼容检查，其他运行时版本需要显式的精确版本豁免才能挂载。
+本版本（0.7.0）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
 
-DSH `0.2.0-rc.2` 的插件接口已经变更，本版本尚未适配：宿主端设置接入由 `installSection` 改为 `SettingsForms`，Models 页给外部插件的座位由补丁出来的 `settings.models.provider-editor` 改为 `settings.models.provider-card`（按 `settingsNs` 键入）。在 0.2.0 上安装虽可用版本豁免放行，但设置区与自定义配置表单不会生效。
+DSH `0.2.0` 重写了设置与 Models 页的插件接口：宿主端设置接入由 `installSection` 改为 `SettingsForms.configure`，Models 页给外部插件的座位由补丁出来的 `settings.models.provider-editor` 改为按 `settingsNs` 键入的 `settings.models.provider-card`。0.7.0 已完成适配：
+
+- 宿主端只使用 0.2.0 的接入方式（`ctx.inject(['settings'], …)` + `configure({ auto: false }, ctx.fiber)`，设置命名空间取 profile entry id）。
+- 配置表单由插件自己的 `Config` schema 提供，需要实时更新的字段用 volatile schema 声明，写入后由 Loader 直接提交进运行中的配置引用。
+- 客户端卡片自带样式与文案，注册进 `settings.models.provider-card`，不再依赖宿主 Models 页的内部组件或插槽补丁。
+
+**使用 DSH `0.1.5-rc.1` / `0.1.5-rc.2` 的用户请停留在 0.6.1。** 0.7.0 不再声明也不再验证 0.1.5 支持。仓库里的 `scripts/install-models-compat.mjs` 只对 0.1.5-rc.1/rc.2 生效，0.2.0 上无法运行（宿主已在 `app.asar` 内）也不再需要；它已不再随包发布。
 
 ## Command Code
 
-从 0.6.0 起也提供 `commandcode`，与 `cline-pass` 共用原生 Models 配置界面、字母排序及增删流程。API 密钥存于独立的 `COMMANDCODE_API_KEY` 引用，模型可在“自定义设置 → 获取可用模型”中查询和选择。
+从 0.6.0 起也提供 `commandcode`，与 `cline-pass` 共用 Models 页的提供方行、添加/删除流程与本插件的编辑卡片。API 密钥存于独立的 `COMMANDCODE_API_KEY` 引用，模型可在卡片的 **获取可用模型** 中查询和选择。
 
 配置存于 `llm-cline-pass.commandcode`，使用官方 Provider API。Claude 模型自动使用 Anthropic Messages，其他模型使用 OpenAI Chat Completions；复用宿主 PiAiAdapter 的流式、工具调用和历史转换。该版本只声明文本输入，不新增视觉或推理强度选项。不把 ClinePass 的实验性上游路由参数发给 Command Code。
 
@@ -20,7 +26,7 @@ DSH `0.2.0-rc.2` 的插件接口已经变更，本版本尚未适配：宿主端
 
 参考：[官方 Provider API](https://commandcode.ai/docs/provider)及[协议分流说明](https://commandcode.ai/blog/command-code-provider-api)。模型目录为公开接口，不能证明账号额度或模型访问权限。测试使用本地模拟服务，没有发送真实推理请求。
 
-为 DeepSeek Harness 添加 ClinePass 订阅模型。已针对本机 npm 安装的 `@deepseek-ai/dsh 0.1.5-rc.1` 开发，并核对过 `0.1.5-rc.2`。
+为 DeepSeek Harness 添加 ClinePass 订阅模型。已针对 `@deepseek-ai/dsh 0.2.0-rc.2` 开发并在真实宿主上验证挂载与设置表单。
 
 **订阅推理与上游固定尚未进行真实账户验证。** `sticky` 和 `experimental-pin` 发送路由参数，不代表 ClinePass 服务端一定执行。此版本不会显示“锁定成功”，也不会自动改走其他账号、模型或按量计费路由。
 
@@ -32,26 +38,17 @@ DSH `0.2.0-rc.2` 的插件接口已经变更，本版本尚未适配：宿主端
 npm ci --ignore-scripts
 npm test
 npm run smoke
-node scripts/install-models-compat.mjs
 npm pack
-dsh plugin --profile web add ./dsh-provider-extensions-0.6.1.tgz
+dsh plugin --profile web add ./dsh-provider-extensions-0.7.0.tgz
 ```
 
-安装命令会修改 DSH 的 web profile。安装后重启 DSH。当前 DSH 0.1.5-rc.1 的 Models 编辑器没有替换接口，兼容脚本为它补充 `settings.models.provider-editor` 插槽，仅接管本插件表单；提供方目录、添加、折叠和删除仍由宿主管理。脚本检查版本与源码结构，原文件备份为 `client.js.cline-pass-original`；宿主升级后需要重新核对兼容性。发布包包含编译结果；请安装 tgz，勿直接链接开发目录。
-
-通过 Git 插件管理器安装时，构建步骤不会自动运行宿主兼容脚本。添加列表的字母排序和自定义编辑表单都由该脚本提供；安装后需执行一次，支持 Models `0.1.5-rc.1` / `0.1.5-rc.2`，宿主升级后需重新应用。Linux 默认 web 配置可运行：
-
-```sh
-node ~/.dsh/profiles/web/node_modules/dsh-provider-extensions/scripts/install-models-compat.mjs
-```
-
-自定义配置可把 Profile 目录作为参数传入；脚本从该目录解析宿主模块，校验源码结构后才修改，并保留原文件备份。应用后刷新 Harness 页面。
+安装命令会修改 DSH 的 web profile。安装后重启 DSH。0.2.0 的 Models 页已为仓库外插件声明 `settings.models.provider-card` 座位，本插件的卡片直接注册进该座位，**不需要任何宿主补丁**；提供方目录、添加、折叠和删除仍由宿主管理。发布包包含编译结果；请安装 tgz，勿直接链接开发目录。
 
 在 Models 的添加提供方下拉菜单中选择 **cline-pass**，填写 Cline API Key。密钥保存到宿主凭据存储，无需设置环境变量；也兼容启动环境中的 `CLINEPASS_API_KEY`。账号需有有效订阅。本版不包含 OAuth 登录。
 
 卸载：`dsh plugin --profile web remove dsh-provider-extensions`，然后重启 DSH。
 
-已有 `llm-pi-ai.providers.commandcode` 自定义配置时，插件保留原生配置入口和路由，不再用自己的同名条目遮蔽它。旧版宿主缺少自定义目录条目时，补充指向原配置的条目；不迁移或改写配置和密钥。
+已有 `llm-pi-ai.providers.commandcode` 自定义配置时，插件保留原生配置入口和路由，不再用自己的同名条目遮蔽它。0.2.0 上宿主的 pi-ai 目录本身就会列出该自定义路由，插件据此放弃 `commandcode` 路由的注册，不迁移或改写配置和密钥。
 
 ## 配置
 
@@ -59,14 +56,16 @@ node ~/.dsh/profiles/web/node_modules/dsh-provider-extensions/scripts/install-mo
 
 安装后不会自动创建 provider。通过宿主的 Provider 下拉菜单选择 `cline-pass`，填写密钥和模型后点击 **应用**。取消不保存配置或密钥。已有配置默认收起，使用宿主的 **编辑** 和 **删除**；删除移除 profile 及模型路由，凭据处理以宿主确认框为准。默认 `CLINEPASS_API_KEY` 为独立引用，会保留以便重新添加。
 
-- **API Key**：密码输入框，留空保留已有密钥，点击应用保存。
-- **自定义设置 → 获取可用模型**：复用宿主模型选择弹窗，支持搜索、勾选和添加所选。查询公开目录，不写入密钥、不校验订阅权益、不消耗推理额度。中文界面点击“保存”，英文界面点击“Apply”提交。
-- **自定义设置 → 路由策略**：默认折叠；选择默认路由、会话黏性或实验性单上游限制；选后者时出现上游标识输入框。
-- **模型列表**：默认自动读取官方目录；可添加/删除模型，并编辑名称、上下文容量及输出上限。
-- **应用 / 取消 / 恢复默认配置**：编辑暂存到点击应用；恢复默认只更新草稿，不删除 API Key。
-- **超时和诊断**：数字输入框与开关，保存后对后续请求生效。
+本版本的卡片由插件自己渲染（自带样式与中英文文案），不再复用宿主 Models 编辑器的内部组件，因此字段布局与 0.6.1 略有不同；字段本身与语义保持一致：
 
-文件示例 [examples/settings.yaml](examples/settings.yaml) 仅供高级用法；设置命名空间为 `llm-cline-pass`，可选提供方存于 `profile`，下表字段均位于其中。旧版顶层配置仍供适配器兼容，GUI 使用 profile 地址。模型 provider ID 为 `cline-pass`。
+- **API 密钥**：密码输入框，留空保留已有密钥，点击 **应用** 后写入凭据存储。
+- **模型列表**：可直接添加/删除行，并编辑模型 ID、显示名称、上下文容量与输出上限。
+- **获取可用模型**：向宿主已注册的模型发现接口查询公开目录，返回可勾选列表（支持搜索、全选/取消全选），选中后写入草稿，已有行的自定义值保留；不写入密钥、不校验订阅权益、不消耗推理额度。
+- **路由策略**：默认路由、会话黏性或实验性单上游限制；选后者时出现上游标识输入框。
+- **请求超时 / 诊断日志**：数字输入框与开关，保存后对后续请求生效。
+- **应用 / 取消 / 恢复默认设置**：编辑暂存到点击应用；恢复默认只更新草稿，不删除已保存的 API 密钥。
+
+文件示例 [examples/settings.yaml](examples/settings.yaml) 是 0.1.5 时代的 `settings.yaml` 片段，仅供旧版参考。0.2.0 的设置存储在 profile 的 `cordis.patch.yml`，命名空间为 profile entry id `llm-cline-pass`，可选提供方存于 `profile`（commandcode 存于 `commandcode`），下表字段均位于其中。旧版顶层配置仍供适配器兼容，GUI 使用 profile 地址。模型 provider ID 为 `cline-pass`。
 
 | 配置 | 默认值 | 行为 |
 | --- | --- | --- |
@@ -95,10 +94,15 @@ node ~/.dsh/profiles/web/node_modules/dsh-provider-extensions/scripts/install-mo
 
 ```powershell
 npm test
+npm run test:mount
 npm run smoke
 ```
 
-单元与集成测试使用模拟响应，无密钥、无网络、无订阅消耗。smoke 从本机 npm 安装位置加载真正的 Cordis/DSH 服务，验证 bundle 合成、插件挂载、模型枚举和卸载，不启动或修改用户 profile。非标准安装可使用：
+单元与集成测试使用模拟响应，无密钥、无网络、无订阅消耗。
+
+`npm run test:mount` 是真实的 0.2.0 挂载测试：它从一份解出来的 `@deepseek-ai/dsh 0.2.0-rc.2` 运行时（`host-runtime`）启动一个临时 profile，把本插件的构建产物作为 profile entry 插入，然后断言插件激活、两条目录条目指向自己的设置命名空间、`commandcode` 默认休眠、设置表单已发布且接受写入、卸载后全部撤销。运行时不存在时该测试自行跳过，不影响 `npm test`；准备方式见 [VALIDATION.md](VALIDATION.md)。
+
+smoke 从本机 npm 安装位置加载真正的 Cordis/DSH 服务，验证 bundle 合成、插件挂载、模型枚举和卸载，不启动或修改用户 profile。非标准安装可使用：
 
 ```powershell
 npm run smoke -- C:\path\to\node_modules\@deepseek-ai\dsh
@@ -126,9 +130,11 @@ npm run probe -- --live --model cline-pass/deepseek-v4-flash --upstream EXACT_UP
 ## 实现与参考
 
 - 原生 `LlmAdapter`，通过 `ctx.llm.registerAdapter()` 挂载，使用宿主凭据和设置服务。
+- 0.2.0 设置接入：`ctx.inject(['settings'], child => child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)))`；设置命名空间取 `ctx.fiber.entry.options.id`；需要实时更新的配置字段在 `Config` schema 上声明为 volatile，写入由 Loader 提交进运行中的配置引用（`src/config.ts`、`src/index.ts`）。
+- 浏览器端通过 `ctx.configForms.get(ns)` 取得设置表单句柄（`subscribe`/`getSnapshot`/`mutate`），通过 `ctx.remote.credentials` 读写密钥，通过 `ctx.remote.llm.discoverModels(ns, request)` 获取模型目录；卡片注册进 `settings.models.provider-card`，key 为 `llm-cline-pass`（`src/client.js`）。
 - 流式处理 UTF-8/SSE 分片、交错工具调用、取消、错误和终止标记；保存 reasoning_details 的 replay envelope。
 - [Cline API 文档](https://github.com/cline/cline/blob/main/docs/api/chat-completions.mdx)
 - [Cline 公开模型目录](https://api.cline.bot/api/v1/ai/cline/recommended-models)
 - [DSH 订阅插件参考](https://github.com/V1ki/dsh-plugin-subscriptions)
-- [DSH 官方：Models 扩展接口](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-settings-models/README.md)：通过 `registerConfigurableProviders` 注册候选项，兼容补丁提供专用表单插槽，`settingsScope` 保存配置，`llm.discoverModels` 获取模型目录。
+- [DSH 官方：Models 扩展接口](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-settings-models/README.md)：通过 `registerConfigurableProviders` 注册候选项，`settings.models.provider-card` 座位渲染适配器卡片，`settings.mutate` 写入表单，`llm.discoverModels` 获取模型目录。
 - [OpenRouter 路由参数](https://openrouter.ai/docs/guides/routing/provider-selection)与[会话黏性](https://openrouter.ai/docs/guides/best-practices/prompt-caching)：仅作候选协议参考，不是 ClinePass 能力承诺。

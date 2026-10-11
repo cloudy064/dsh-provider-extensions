@@ -3,9 +3,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import type { CommandCodeConfig } from './commandcode.js';
 
 export interface ModelConfig { id: string; name?: string; contextWindow?: number; maxTokens?: number }
-export interface Config {
-  commandcode?: CommandCodeConfig;
-  profile?: Omit<Config, 'profile'>;
+export interface ProfileConfig {
   enabled?: boolean;
   apiKeyEnv?: string;
   models?: ModelConfig[];
@@ -13,6 +11,29 @@ export interface Config {
   upstream?: string;
   timeoutMs?: number;
   diagnostics?: boolean;
+}
+export interface Config extends ProfileConfig {
+  commandcode?: CommandCodeConfig;
+  profile?: ProfileConfig;
+}
+/**
+ * A plugin configuration as the running loader hands it over. From DSH 0.2.0
+ * a schema node marked `.volatile()` parses into a mutable reference rather
+ * than a plain object, so every reader unwraps first.
+ */
+export type ConfigInput = Config | Volatile<Config>;
+
+/** The mutable config reference `@deepseek-ai/schemastery` creates for a volatile schema node. */
+export interface Volatile<T> { get(): T }
+
+export function isVolatile(value: unknown): value is Volatile<unknown> {
+  return typeof value === 'object' && value !== null && typeof (value as Volatile<unknown>).get === 'function';
+}
+
+/** Read the plain configuration object out of a possibly-volatile configuration. */
+export function unwrapConfig(value: ConfigInput | undefined): Config {
+  if (value === undefined) return {};
+  return (isVolatile(value) ? value.get() : value) as Config;
 }
 const Profile = z.object({
   enabled: z.boolean().default(false),
@@ -31,7 +52,13 @@ const Profile = z.object({
 delete Profile.meta.default;
 const CommandProfile = z.object({ apiKeyEnv: z.string().role('credential-ref').default('COMMANDCODE_API_KEY'), models: Profile.dict!.models, timeoutMs: Profile.dict!.timeoutMs });
 delete CommandProfile.meta.default;
-export const Config: z<Config> = z.object({ ...Profile.dict, profile: Profile, commandcode: CommandProfile });
+// The volatile root is what puts this plugin's own schema on the 0.2.0 Models
+// page: `SettingsForms` derives an editable form from the volatile nodes of a
+// live entry's Config and refuses writes outside them, and the loader commits
+// a volatile-only change into the running reference instead of remounting.
+// `extra('volatile', true)` is what `Schema#volatile()` sets, used directly
+// because the 0.1.5 typings this project compiles against predate that method.
+export const Config = (z.object({ ...Profile.dict, profile: Profile, commandcode: CommandProfile }) as unknown as { extra(key: string, value: boolean): z<Config> }).extra('volatile', true);
 export const PROVIDER = 'cline-pass';
 export const BASE_URL = 'https://api.cline.bot/api/v1';
 export function subscriptionModel(id: string): string {
@@ -40,7 +67,8 @@ export function subscriptionModel(id: string): string {
   }
   return id;
 }
-export function resolveConfig(input: Config = {}) {
+export function resolveConfig(value: ConfigInput = {}) {
+  let input = unwrapConfig(value);
   if (input.profile !== undefined) input = { ...input.profile, enabled: true };
   const config = {
     enabled: input.enabled ?? false,

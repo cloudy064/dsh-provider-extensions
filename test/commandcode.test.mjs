@@ -47,22 +47,27 @@ test('existing commandcode directory remains owned by the custom provider', asyn
   } finally { await ctx.fiber.dispose(); }
 });
 
-test('older hosts retain custom commandcode settings even without a directory entry', async () => {
+test('a native llm-pi-ai commandcode route keeps ownership of the provider', async () => {
   const ctx = new Context();
   const native = { providers: { commandcode: { displayName: 'Existing gateway', models: [{ id: 'custom-model' }] } } };
   const before = structuredClone(native);
+  const configuration = [{ entry: { options: { id: 'llm-pi-ai' } }, override: native }];
   try {
     await ctx.plugin(LlmRuntime).await();
-    ctx.provide('settings');
-    ctx.set('settings', { get: ns => ns === 'llm-pi-ai' ? native : undefined, installSection() {} });
+    // DSH 0.2.0 composes every live entry's raw configuration here; the removed
+    // `settings.get(ns)` reader is not consulted, so a sibling route is read
+    // through this service instead.
+    ctx.provide('configEditor');
+    ctx.set('configEditor', { configuration: () => configuration });
     const fork = ctx.plugin(plugin, { commandcode: { models: [{ id: 'plugin-model' }] } });
     await fork.await();
     const row = ctx.llm.listConfigurableProviders().find(p => p.provider === 'commandcode');
     assert.equal(row.settingsNs, 'llm-pi-ai');
     assert.deepEqual(row.settingsPath, ['providers', 'commandcode']);
     assert.equal(row.displayName, 'Existing gateway');
+    assert.equal(row.declared, true);
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'commandcode'));
-    assert.deepEqual(native, before);
+    assert.deepEqual(configuration[0].override, before);
   } finally { await ctx.fiber.dispose(); }
 });
 
