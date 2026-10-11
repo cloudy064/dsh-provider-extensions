@@ -43,6 +43,39 @@ export async function discoverCatalog(fetcher: typeof fetch = fetch, signal?: Ab
   return parseCatalog(await response.json());
 }
 
+/**
+ * Structural fields of a provider error. These name the failure without ever
+ * carrying prompt text, so they are safe to report on every failure.
+ */
+function providerErrorFields(error: unknown): string {
+  if (error === null || typeof error !== 'object') return '';
+  const source = error as Record<string, unknown>;
+  const fields: string[] = [];
+  for (const key of ['code', 'type', 'param', 'status']) {
+    const value = source[key];
+    if (typeof value === 'string' && value) fields.push(`${key}=${value}`);
+    else if (typeof value === 'number' && Number.isFinite(value)) fields.push(`${key}=${value}`);
+  }
+  return fields.join(' ');
+}
+
+/** Provider-authored free text of an error frame, when the field is a string. */
+function providerErrorText(error: unknown): string {
+  if (typeof error === 'string') return error;
+  if (error === null || typeof error !== 'object') return '';
+  const message = (error as { message?: unknown }).message;
+  return typeof message === 'string' ? message : '';
+}
+
+/**
+ * One line of provider text, for a report the operator opted into with
+ * `diagnostics`: key-shaped tokens removed and the length capped so a body
+ * cannot flood the transcript.
+ */
+function redactProviderMessage(text: string): string {
+  return text.replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
 export class ClinePassAdapter extends LlmAdapter {
   private catalog?: { at: number; models: ModelConfig[] };
   constructor(private readonly deps: AdapterDependencies) { super(); }
@@ -110,12 +143,25 @@ export class ClinePassAdapter extends LlmAdapter {
         body: JSON.stringify(request),
       });
       if (!response.ok) {
-        await response.body?.cancel();
         const status = response.status;
         const code = status === 401 ? 'AUTH' : status === 403 ? 'SUBSCRIPTION_REQUIRED' : status === 429 ? 'RATE_LIMIT' : status >= 500 ? 'SERVER_ERROR' : 'BAD_REQUEST';
         const retry = response.headers.get('retry-after');
         const delay = retry ? (/^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 0;
-        throw new LlmError(`ClinePass HTTP ${status} (${code}); response body omitted to protect credentials and prompts.`, code,
+        // Report the provider's structural error fields; its free text follows
+        // only under `diagnostics`, redacted and capped, never the raw body.
+        let report = '';
+        try {
+          const body = (await response.text()).slice(0, 4096);
+          let parsed: unknown;
+          try { parsed = JSON.parse(body); } catch { parsed = undefined; }
+          const error = parsed !== null && typeof parsed === 'object' && 'error' in parsed ? (parsed as { error?: unknown }).error : parsed;
+          const fields = providerErrorFields(error);
+          const text = config.diagnostics ? redactProviderMessage(providerErrorText(error)) : '';
+          report = [fields, text && `: ${text}`].filter(Boolean).join(' ');
+        } catch {
+          await response.body?.cancel().catch(() => {});
+        }
+        throw new LlmError(`ClinePass HTTP ${status} (${code})${report ? ` [${report}]` : ''}; response body omitted to protect credentials and prompts.`, code,
           { status, ...(Number.isFinite(delay) && delay > 0 ? { providerRetryAfterMs: delay } : {}) });
       }
       if (!response.body) throw new LlmError('ClinePass returned no response body.', 'PROTOCOL');
@@ -123,7 +169,13 @@ export class ClinePassAdapter extends LlmAdapter {
         if (event === '[DONE]') { done = true; break; }
         let raw: any;
         try { raw = JSON.parse(event); } catch { throw new LlmError('Invalid JSON in ClinePass stream.', 'PROTOCOL'); }
-        if (raw.error) throw new LlmError('ClinePass reported an error within the stream.', 'STREAM_ERROR');
+        if (raw.error) {
+          // Name the refusal on every failure; add the provider's own words only
+          // when the operator opted into diagnostics, still redacted and capped.
+          const fields = providerErrorFields(raw.error);
+          const text = config.diagnostics ? redactProviderMessage(providerErrorText(raw.error)) : '';
+          throw new LlmError(`ClinePass reported an error within the stream${fields ? ` (${fields})` : ''}${text ? `: ${text}` : '.'}`, 'STREAM_ERROR');
+        }
         if (typeof raw.provider === 'string') diagnostic.observedUpstream = raw.provider;
         const reported = tokenUsage(raw.usage);
         if (reported) usage = reported;

@@ -148,6 +148,19 @@ test('stream errors and unknown finish reasons are explicit failures', async () 
   await assert.rejects(collect(adapter([{ error: { message: 'secret-test-key' } }]).stream(options)), e => e.code === 'STREAM_ERROR' && !e.message.includes('secret-test-key'));
   await assert.rejects(collect(adapter([choice({}, 'content_filter'), '[DONE]']).stream(options)), e => e.code === 'STREAM_ERROR');
 });
+test('provider refusal names its cause while free text stays behind diagnostics', async () => {
+  const refusal = { error: { code: 'invalid_request_error', type: 'invalid_request_error', message: 'model cline-pass/x is not available' } };
+  await assert.rejects(collect(adapter([refusal]).stream(options)), e => e.code === 'STREAM_ERROR'
+    && e.message.includes('code=invalid_request_error') && e.message.includes('type=invalid_request_error')
+    && !e.message.includes('is not available'));
+  await assert.rejects(collect(adapter([refusal], { diagnostics: true }).stream(options)), e => e.message.includes('is not available'));
+  const secret = `sk-${'a'.repeat(40)}`;
+  await assert.rejects(collect(adapter([{ error: { message: `rejected ${secret}` } }], { diagnostics: true }).stream(options)),
+    e => e.message.includes('rejected') && e.message.includes('[redacted]') && !e.message.includes(secret));
+  await assert.rejects(collect(adapter([], {}, {
+    fetch: async () => new Response(JSON.stringify({ error: { code: 'insufficient_quota', message: 'balance is empty' } }), { status: 402 }),
+  }).stream(options)), e => e.code === 'BAD_REQUEST' && e.message.includes('code=insufficient_quota') && !e.message.includes('balance is empty'));
+});
 test('HTTP rate limits preserve retry delay without exposing bodies', async () => {
   await assert.rejects(collect(adapter([], {}, { fetch: async () => new Response('secret-test-key', { status: 429, headers: { 'retry-after': '2' } }) }).stream(options)), e => e.code === 'RATE_LIMIT' && e.failure.providerRetryAfterMs === 2000 && !e.message.includes('secret-test-key'));
 });
