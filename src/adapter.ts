@@ -192,7 +192,18 @@ export class ClinePassAdapter extends LlmAdapter {
       }
       if (usage) yield { type: 'usage', usage };
       diagnostic.outcome = reason.kind;
-      yield { type: 'finish', reason, replayState: { response: { format: 'cline-pass-v1', reasoningDetails: details.size ? [...details.values()] : undefined } } };
+      // DSH records every chunk through a lossless-JSON check: an object key
+      // holding `undefined` fails it, so the replay envelope omits the key
+      // instead of setting it when the response carried no reasoning details.
+      yield {
+        type: 'finish', reason,
+        replayState: {
+          response: {
+            format: 'cline-pass-v1',
+            ...(details.size ? { reasoningDetails: [...details.values()] } : {}),
+          },
+        },
+      };
     } catch (error) {
       if (signal.aborted) throw new LlmError('ClinePass request cancelled or timed out.', options.signal?.aborted ? 'ABORTED' : 'TIMEOUT');
       if (error instanceof LlmError) throw error;

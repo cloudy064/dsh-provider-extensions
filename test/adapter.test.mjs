@@ -78,6 +78,51 @@ test('stream emits text, reasoning, interleaved tool calls and final usage in or
     { type: 'tool-call', id: 'call-b', name: 'list', arguments: '{}' },
   ]);
 });
+
+// DSH records every chunk through a lossless-JSON check: an object key holding
+// `undefined`, a non-finite number, a sparse array, or a non-plain object is
+// rejected and fails the whole run. Mirror those rules over a real stream.
+function assertLosslessJson(value, path = 'chunk', open = new Set()) {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return;
+  if (typeof value === 'number') {
+    assert.ok(Number.isFinite(value) && !Object.is(value, -0), `${path}: ${String(value)} is not a JSON number`);
+    return;
+  }
+  assert.notEqual(value, undefined, `${path} is undefined`);
+  assert.equal(typeof value, 'object', `${path} is not a JSON value`);
+  assert.ok(!open.has(value), `${path} is cyclic`);
+  open.add(value);
+  if (Array.isArray(value)) {
+    assert.equal(Object.getPrototypeOf(value), Array.prototype, `${path} is not a plain array`);
+    assert.equal(Reflect.ownKeys(value).length, value.length + 1, `${path} is a sparse or decorated array`);
+    value.forEach((item, index) => assertLosslessJson(item, `${path}[${index}]`, open));
+  } else {
+    assert.equal(Object.getPrototypeOf(value), Object.prototype, `${path} is not a plain object`);
+    for (const [key, item] of Object.entries(value)) assertLosslessJson(item, `${path}.${key}`, open);
+  }
+  open.delete(value);
+}
+
+test('every streamed chunk survives a lossless JSON round trip', async () => {
+  const plain = [
+    choice({ content: 'Done' }, 'stop'),
+    { choices: [], usage: { prompt_tokens: 12, completion_tokens: 3 } },
+    '[DONE]',
+  ];
+  const detailed = [
+    choice({ reasoning_content: 'think', reasoning_details: [{ index: 0, type: 'reasoning.text', id: 'r1', text: 'think' }] }, 'stop'),
+    '[DONE]',
+  ];
+  for (const [events, hasDetails] of [[plain, false], [detailed, true]]) {
+    const chunks = await collect(adapter(events).stream(options));
+    assert.ok(chunks.length > 0);
+    for (const chunk of chunks) assertLosslessJson(chunk);
+    const finish = chunks.at(-1);
+    assert.equal(finish.type, 'finish');
+    assert.equal(Object.hasOwn(finish.replayState.response, 'reasoningDetails'), hasDetails);
+  }
+});
+
 test('wire request includes attribution and tools; never rewrites input', async () => {
   const original = structuredClone(options); let captured;
   await collect(adapter([], {}, { fetch: async (url, init) => { captured = { url, ...init }; return response([choice({ content: 'OK' }, 'stop'), '[DONE]']); } }).stream(options));

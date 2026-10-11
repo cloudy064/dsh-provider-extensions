@@ -65,6 +65,7 @@ window.__ModuleLoader__.load({
         noDetail: '（宿主未返回错误详情，详见浏览器控制台）',
         modelsInherited: '列表留空：自动读取 ClinePass 官方目录（cline-pass/* 订阅模型），无需手动添加；点“获取可用模型”可挑选子集写入配置。',
         modelsInheritedCommand: '列表留空：自动读取 Command Code 官方目录，无需手动添加；点“获取可用模型”可挑选子集写入配置。',
+        inheritedNow: '当前生效：',
         pickerTitle: '选择要添加的模型', addSelected: '添加所选', selectAll: '全选', selectNone: '取消全选',
         searchModels: '搜索模型', closePicker: '关闭', catalogEmpty: '目录没有可添加的模型。',
       },
@@ -88,6 +89,7 @@ window.__ModuleLoader__.load({
         noDetail: '(the host returned no error detail; see the browser console)',
         modelsInherited: 'Empty list: the ClinePass catalog (cline-pass/* subscription models) is read automatically, so nothing has to be added by hand. "Fetch available models" copies a chosen subset into the configuration.',
         modelsInheritedCommand: 'Empty list: the Command Code catalog is read automatically, so nothing has to be added by hand. "Fetch available models" copies a chosen subset into the configuration.',
+        inheritedNow: 'Currently in effect: ',
         pickerTitle: 'Choose models to add', addSelected: 'Add selected', selectAll: 'Select all', selectNone: 'Select none',
         searchModels: 'Search models', closePicker: 'Close', catalogEmpty: 'The catalog offers no new models.',
       },
@@ -115,6 +117,9 @@ window.__ModuleLoader__.load({
       const [chosen, setChosen] = React.useState({});
       const [query, setQuery] = React.useState('');
       const [fetching, setFetching] = React.useState(false);
+      // The models an empty list falls back to, read from the host's own session
+      // catalog so the card can show what is actually in effect right now.
+      const [inherited, setInherited] = React.useState(null);
       // Adopt the host value whenever an edit did not start locally: a write
       // from another tab, or a reload after this card's own apply.
       React.useEffect(() => {
@@ -129,6 +134,23 @@ window.__ModuleLoader__.load({
           .catch(() => {});
         return () => { active = false; };
       }, [credentials, ref, snapshot.revision]);
+      React.useEffect(() => {
+        let active = true;
+        const providerId = provider?.provider;
+        if (!providerId || !remote?.session?.modelCatalog) { setInherited(null); return undefined; }
+        Promise.resolve(remote.session.modelCatalog())
+          .then(response => {
+            if (!active) return;
+            const groups = response?.ok ? response.value?.groups : undefined;
+            const group = groups?.find(candidate => candidate.id === providerId);
+            setInherited(group ? group.models.map(model => model.id) : []);
+          })
+          .catch(error => {
+            console.error('[dsh-provider-extensions] reading the host model catalog failed', error);
+            if (active) setInherited([]);
+          });
+        return () => { active = false; };
+      }, [remote, provider?.provider]);
       /** Every field the card owns, as the values a save should leave behind. */
       const normalized = value => {
         const models = [];
@@ -260,7 +282,9 @@ window.__ModuleLoader__.load({
         })),
         h('div', { className: 'dshpe-models' },
           h('span', { className: 'dshpe-label' }, t('models')),
-          draft.models.length === 0 ? h('p', { className: 'dshpe-hint' }, command ? t('modelsInheritedCommand') : t('modelsInherited')) : null,
+          draft.models.length === 0 ? h(React.Fragment, null,
+            h('p', { className: 'dshpe-hint' }, command ? t('modelsInheritedCommand') : t('modelsInherited')),
+            inherited && inherited.length ? h('p', { className: 'dshpe-hint' }, `${t('inheritedNow')}${inherited.join(', ')}`) : null) : null,
           draft.models.map((model, index) => h('div', { className: 'dshpe-model', key: index },
             input(model.id ?? '', value => modelChange(index, 'id', value), { 'aria-label': `${t('modelId')} ${index + 1}`, placeholder: command ? t('modelId') : 'cline-pass/model-id' }),
             input(model.name ?? '', value => modelChange(index, 'name', value), { 'aria-label': `${t('modelName')} ${index + 1}`, placeholder: t('modelName') }),
@@ -315,6 +339,6 @@ window.__ModuleLoader__.load({
       // plugin's settings namespace, which is the profile entry id.
       ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({ name: 'settings.models.provider-card', key: NS, id: NS }, Panel));
     }
-    return { inject: ['slots', 'remote', 'remote.credentials', 'remote.llm', 'configForms', 'locale'], apply };
+    return { inject: ['slots', 'remote', 'remote.credentials', 'remote.llm', 'remote.session', 'configForms', 'locale'], apply };
   },
 });
