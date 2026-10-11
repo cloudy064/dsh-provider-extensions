@@ -62,6 +62,9 @@ window.__ModuleLoader__.load({
         modelInvalid: '模型容量需为正整数。', modelDuplicate: '模型 ID 不能重复。',
         unavailable: '设置暂不可用。', conflict: '设置已被其他操作修改，请重试。', keyWriteFailed: '密钥保存失败。',
         discover: '获取可用模型', discovering: '正在获取…', discoverFailed: '模型目录获取失败。',
+        noDetail: '（宿主未返回错误详情，详见浏览器控制台）',
+        modelsInherited: '列表留空：自动读取 ClinePass 官方目录（cline-pass/* 订阅模型），无需手动添加；点“获取可用模型”可挑选子集写入配置。',
+        modelsInheritedCommand: '列表留空：自动读取 Command Code 官方目录，无需手动添加；点“获取可用模型”可挑选子集写入配置。',
         pickerTitle: '选择要添加的模型', addSelected: '添加所选', selectAll: '全选', selectNone: '取消全选',
         searchModels: '搜索模型', closePicker: '关闭', catalogEmpty: '目录没有可添加的模型。',
       },
@@ -82,6 +85,9 @@ window.__ModuleLoader__.load({
         modelInvalid: 'Model limits must be positive integers.', modelDuplicate: 'Model IDs must be unique.',
         unavailable: 'Settings are unavailable.', conflict: 'Settings changed elsewhere; try again.', keyWriteFailed: 'The API key was not saved.',
         discover: 'Fetch available models', discovering: 'Fetching…', discoverFailed: 'The model catalog could not be fetched.',
+        noDetail: '(the host returned no error detail; see the browser console)',
+        modelsInherited: 'Empty list: the ClinePass catalog (cline-pass/* subscription models) is read automatically, so nothing has to be added by hand. "Fetch available models" copies a chosen subset into the configuration.',
+        modelsInheritedCommand: 'Empty list: the Command Code catalog is read automatically, so nothing has to be added by hand. "Fetch available models" copies a chosen subset into the configuration.',
         pickerTitle: 'Choose models to add', addSelected: 'Add selected', selectAll: 'Select all', selectNone: 'Select none',
         searchModels: 'Search models', closePicker: 'Close', catalogEmpty: 'The catalog offers no new models.',
       },
@@ -202,21 +208,39 @@ window.__ModuleLoader__.load({
        */
       const discover = async () => {
         setFetching(true); setNotice('');
+        const ns = provider?.settingsNs ?? NS;
+        const request = { provider: provider?.provider };
         try {
-          const response = await remote.llm.discoverModels(provider?.settingsNs ?? NS, { provider: provider?.provider });
-          // The remote answers `{ ok, value }`; accept an already-normalized
-          // `{ kind }` reply too so this card survives either caller shape.
-          const answer = response?.kind !== undefined ? response
-            : response?.ok ? { kind: 'found', models: response.value } : { kind: 'refused', message: response?.error?.message };
-          if (answer.kind !== 'found') { setNotice(answer.message || t('discoverFailed')); return; }
+          const response = await remote.llm.discoverModels(ns, request);
+          // The remote answers `{ ok, value }`; accept a raw array or an
+          // already-normalized `{ kind }` reply too, so this card survives
+          // either caller shape.
+          const envelope = Array.isArray(response) ? { ok: true, value: response } : response;
+          const answer = envelope?.kind !== undefined ? envelope
+            : envelope?.ok ? { kind: 'found', models: envelope.value }
+              : { kind: 'refused', message: envelope?.error?.message, code: envelope?.error?.code };
+          if (answer.kind !== 'found') {
+            const reason = [answer.code && `code=${answer.code}`, answer.message].filter(Boolean).join(' ');
+            console.error('[dsh-provider-extensions] model discovery refused', { ns, request, response, answer });
+            setNotice(`${t('discoverFailed')} [${ns}/${request.provider ?? '-'}] ${reason || t('noDetail')}`);
+            return;
+          }
           const known = new Set(draft.models.map(model => model.id));
           const offered = (answer.models ?? []).filter(model => model?.id && !known.has(model.id));
-          if (offered.length === 0) { setNotice(t('catalogEmpty')); return; }
+          if (offered.length === 0) {
+            console.error('[dsh-provider-extensions] model discovery returned nothing to add', { ns, request, total: (answer.models ?? []).length });
+            setNotice(`${t('catalogEmpty')} [${ns}/${request.provider ?? '-'}] ${(answer.models ?? []).length}`);
+            return;
+          }
           setCatalog(offered);
           setChosen(Object.fromEntries(offered.map(model => [model.id, true])));
           setQuery('');
         } catch (error) {
-          setNotice(`${t('discoverFailed')} ${error?.message ?? ''}`.trim());
+          console.error('[dsh-provider-extensions] model discovery failed', { ns, request, error });
+          const detail = error instanceof Error && error.message
+            ? `${error.name}: ${error.message}`
+            : JSON.stringify(error) || t('noDetail');
+          setNotice(`${t('discoverFailed')} [${ns}/${request.provider ?? '-'}] ${detail}`);
         } finally { setFetching(false); }
       };
       const addChosen = () => {
@@ -236,6 +260,7 @@ window.__ModuleLoader__.load({
         })),
         h('div', { className: 'dshpe-models' },
           h('span', { className: 'dshpe-label' }, t('models')),
+          draft.models.length === 0 ? h('p', { className: 'dshpe-hint' }, command ? t('modelsInheritedCommand') : t('modelsInherited')) : null,
           draft.models.map((model, index) => h('div', { className: 'dshpe-model', key: index },
             input(model.id ?? '', value => modelChange(index, 'id', value), { 'aria-label': `${t('modelId')} ${index + 1}`, placeholder: command ? t('modelId') : 'cline-pass/model-id' }),
             input(model.name ?? '', value => modelChange(index, 'name', value), { 'aria-label': `${t('modelName')} ${index + 1}`, placeholder: t('modelName') }),
