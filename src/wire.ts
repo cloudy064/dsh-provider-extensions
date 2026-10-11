@@ -35,15 +35,18 @@ export function buildRequest(options: GenerateOptions, config: ResolvedConfig): 
     if (replay?.format === 'cline-pass-v1' && replay.reasoningDetails) wire.reasoning_details = replay.reasoningDetails;
     messages.push(wire);
   }
+  // Only parameters the Cline API documents are sent. Undocumented extras are
+  // relayed to the upstream provider, which answers with a mid-stream error
+  // frame that reads as an opaque failure; `stream_options` is unnecessary
+  // because the final chunk carries usage, and the API documents no
+  // reasoning-effort parameter at all.
   const body: Record<string, unknown> = {
     model: subscriptionModel(options.model), messages, stream: true,
-    stream_options: { include_usage: true },
   };
   if (options.tools?.length) body.tools = options.tools.map(tool => ({ type: 'function', function: tool }));
   if (options.temperature !== undefined) body.temperature = options.temperature;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
   if (options.stop !== undefined) body.stop = options.stop;
-  if (options.reasoningEffort !== undefined) body.reasoning_effort = options.reasoningEffort;
   if (config.routing !== 'default' && options.sessionId) {
     // Stable, bounded identity; auxiliary calls use a separate route from conversation turns.
     body.session_id = 'dsh-' + createHash('sha256').update(`${options.sessionId}:${options.purpose ?? 'conversation'}`).digest('hex');

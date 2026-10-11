@@ -6,7 +6,7 @@
 
 ## 适用 DSH 版本
 
-本版本（0.7.5）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
+本版本（0.7.6）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
 
 DSH `0.2.0` 重写了设置与 Models 页的插件接口：宿主端设置接入由 `installSection` 改为 `SettingsForms.configure`，Models 页给外部插件的座位由补丁出来的 `settings.models.provider-editor` 改为按 `settingsNs` 键入的 `settings.models.provider-card`。0.7.0 已完成适配：
 

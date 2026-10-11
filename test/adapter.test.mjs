@@ -161,6 +161,26 @@ test('provider refusal names its cause while free text stays behind diagnostics'
     fetch: async () => new Response(JSON.stringify({ error: { code: 'insufficient_quota', message: 'balance is empty' } }), { status: 402 }),
   }).stream(options)), e => e.code === 'BAD_REQUEST' && e.message.includes('code=insufficient_quota') && !e.message.includes('balance is empty'));
 });
+test('a documented mid-stream error names its code and unknown finish reasons name themselves', async () => {
+  const nested = [{ choices: [{ index: 0, finish_reason: 'error', error: { code: 'context_length_exceeded', message: 'The input exceeds the model maximum context length.' } }] }];
+  await assert.rejects(collect(adapter(nested).stream(options)), e => e.code === 'STREAM_ERROR'
+    && e.message.includes('code=context_length_exceeded') && !e.message.includes('exceeds'));
+  await assert.rejects(collect(adapter(nested, { diagnostics: true }).stream(options)), e => e.message.includes('exceeds'));
+  await assert.rejects(collect(adapter([choice({}, 'content_filter'), '[DONE]']).stream(options)), e => e.message.includes('content_filter'));
+});
+test('requests carry only parameters the Cline API documents', async () => {
+  let captured;
+  const events = [choice({ content: 'OK' }, 'stop'), '[DONE]'];
+  const instance = adapter(events, {}, {
+    fetch: async (url, init) => { captured = JSON.parse(init.body); return response(events); },
+  });
+  await collect(instance.stream({ ...options, reasoningEffort: 'high', maxTokens: 256, temperature: 0.2 }));
+  // The routing keys are this plugin's own documented feature; everything else
+  // must be a parameter the Cline API actually documents.
+  const routingKeys = ['session_id', 'provider'];
+  assert.deepEqual(Object.keys(captured).filter((key) => !routingKeys.includes(key)).sort(), ['max_tokens', 'messages', 'model', 'stream', 'temperature']);
+  assert.ok(!('reasoning_effort' in captured) && !('stream_options' in captured));
+});
 test('HTTP rate limits preserve retry delay without exposing bodies', async () => {
   await assert.rejects(collect(adapter([], {}, { fetch: async () => new Response('secret-test-key', { status: 429, headers: { 'retry-after': '2' } }) }).stream(options)), e => e.code === 'RATE_LIMIT' && e.failure.providerRetryAfterMs === 2000 && !e.message.includes('secret-test-key'));
 });

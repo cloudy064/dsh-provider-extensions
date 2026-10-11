@@ -76,6 +76,13 @@ function redactProviderMessage(text: string): string {
   return text.replace(/\b[A-Za-z0-9_-]{24,}\b/g, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, 200);
 }
 
+/** One message for either documented in-stream refusal shape. */
+function streamRefusal(error: unknown, diagnostics: boolean): string {
+  const fields = providerErrorFields(error);
+  const text = diagnostics ? redactProviderMessage(providerErrorText(error)) : '';
+  return `ClinePass reported an error within the stream${fields ? ` (${fields})` : ''}${text ? `: ${text}` : '.'}`;
+}
+
 export class ClinePassAdapter extends LlmAdapter {
   private catalog?: { at: number; models: ModelConfig[] };
   constructor(private readonly deps: AdapterDependencies) { super(); }
@@ -169,18 +176,16 @@ export class ClinePassAdapter extends LlmAdapter {
         if (event === '[DONE]') { done = true; break; }
         let raw: any;
         try { raw = JSON.parse(event); } catch { throw new LlmError('Invalid JSON in ClinePass stream.', 'PROTOCOL'); }
-        if (raw.error) {
-          // Name the refusal on every failure; add the provider's own words only
-          // when the operator opted into diagnostics, still redacted and capped.
-          const fields = providerErrorFields(raw.error);
-          const text = config.diagnostics ? redactProviderMessage(providerErrorText(raw.error)) : '';
-          throw new LlmError(`ClinePass reported an error within the stream${fields ? ` (${fields})` : ''}${text ? `: ${text}` : '.'}`, 'STREAM_ERROR');
-        }
+        if (raw.error) throw new LlmError(streamRefusal(raw.error, config.diagnostics), 'STREAM_ERROR');
         if (typeof raw.provider === 'string') diagnostic.observedUpstream = raw.provider;
         const reported = tokenUsage(raw.usage);
         if (reported) usage = reported;
         const choice = raw.choices?.find((c: any) => c.index === 0) ?? raw.choices?.[0];
         if (!choice) continue;
+        // The API documents mid-stream failures as `choices[0].error` next to
+        // `finish_reason: 'error'`, so name that refusal like the top-level one
+        // instead of reporting an unknown finish reason.
+        if (choice.error) throw new LlmError(streamRefusal(choice.error, config.diagnostics), 'STREAM_ERROR');
         const delta = choice.delta ?? {};
         if (reason && (delta.content || delta.reasoning || delta.reasoning_content || delta.tool_calls?.length)) throw new LlmError('Content arrived after finish_reason.', 'PROTOCOL');
         for (const [type, value] of [['reasoning', delta.reasoning_content ?? delta.reasoning], ['text', delta.content]] as const) {
@@ -233,7 +238,7 @@ export class ClinePassAdapter extends LlmAdapter {
         if (choice.finish_reason != null) {
           const reasons: Record<string, FinishReason> = { stop: { kind: 'stop' }, tool_calls: { kind: 'tool-calls' }, length: { kind: 'max-tokens' } };
           reason = reasons[choice.finish_reason];
-          if (!reason) throw new LlmError('ClinePass returned an unsuccessful or unknown finish reason.', 'STREAM_ERROR');
+          if (!reason) throw new LlmError(`ClinePass returned an unsuccessful or unknown finish reason (${String(choice.finish_reason)}).`, 'STREAM_ERROR');
         }
       }
       if (!done || !reason) throw new LlmError('ClinePass stream ended before its terminal markers.', 'INCOMPLETE_STREAM');

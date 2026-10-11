@@ -1,6 +1,6 @@
 {
   "name": "dsh-provider-extensions",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Additional model providers for DeepSeek Harness, including ClinePass and Command Code",
   "type": "module",
   "main": "lib/index.js",
