@@ -1,22 +1,86 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   LlmAdapter, LlmError, attributionHeaders, assertUsableApiKey, resolveRetryPolicy,
   type GenerateOptions, type StreamChunk, type ContentBlock, type FinishReason,
-  type TokenUsage, type LlmResolvedModelInfo, ToolCallId,
+  type TokenUsage, type LlmResolvedModelInfo, ToolCallId, ProviderRequestId,
 } from '@deepseek-ai/dsh-llm';
 import { BASE_URL, PROVIDER, resolveConfig, subscriptionModel, type ResolvedConfig, type ModelConfig } from './config.js';
 import { buildRequest, sse, tokenUsage } from './wire.js';
 
 export interface Diagnostic {
+  attemptId: string; sessionHash?: string; timestamp: string;
   routing: string; routingVerified: false; model: string; requestedUpstream?: string;
   observedUpstream?: string; elapsedMs: number; firstTokenMs?: number;
   usage?: TokenUsage; outcome: string; promptHash: string; toolsHash: string;
+  requestId?: string; httpStatus?: number;
+  providerError?: { code?: string; reason: string; messageHash?: string; upstream?: { code?: string; reason: string; messageHash?: string } };
+  failure?: { stage: string; errorType: string; causeCode?: string; receivedOutput: boolean; code?: string; retryable?: boolean };
+}
+const RETRYABLE_CODES = ['RATE_LIMIT', 'SERVER_ERROR', 'TIMEOUT', 'TRANSPORT', 'INCOMPLETE_STREAM'];
+
+/** Only known status/error identifiers can affect retry decisions. */
+function streamErrorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'STREAM_ERROR';
+  const value = error as Record<string, unknown>;
+  const code = String(value.code ?? value.status ?? '').toLowerCase();
+  if (code === '429' || code === 'rate_limit' || code === 'rate_limit_exceeded') return 'RATE_LIMIT';
+  if (/^5\d\d$/.test(code) || ['server_error', 'internal_server_error', 'service_unavailable', 'bad_gateway'].includes(code)) return 'SERVER_ERROR';
+  return 'STREAM_ERROR';
+}
+
+/** Summarize provider free text without copying possible prompt/credential echoes. */
+function providerDiagnostic(error: unknown, nested = false): NonNullable<Diagnostic['providerError']> {
+  const raw = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const code = String(raw.code ?? raw.status ?? '');
+  const known = /^(?:[45]\d\d|rate_limit|rate_limit_exceeded|server_error|internal_server_error|service_unavailable|bad_gateway|context_length_exceeded|content_filter|stream_initialization_failed)$/;
+  const message = providerErrorText(error);
+  const reasons: [RegExp, string][] = [
+    [/context.{0,20}(length|limit)|too many tokens/i, 'context_limit'],
+    [/rate.?limit|too many requests/i, 'rate_limit'],
+    [/overload|capacity/i, 'overloaded'], [/timed? ?out|timeout/i, 'upstream_timeout'],
+    [/unavailable|no available provider/i, 'unavailable'],
+    [/invalid.*(key|token)|unauthoriz/i, 'authentication'],
+    [/quota|credit|balance/i, 'quota'], [/tool_call_id/i, 'tool_call_id'],
+    [/internal server|internal error/i, 'internal_server_error'],
+    [/upstream|provider returned error/i, 'upstream_error'],
+  ];
+  let upstream: Diagnostic['providerError'];
+  // Some gateways embed the upstream JSON error as metadata.raw. Never retain it verbatim.
+  if (!nested && raw.metadata && typeof raw.metadata === 'object') {
+    const source = (raw.metadata as Record<string, unknown>).raw;
+    if (typeof source === 'string' && source.length <= 4096) {
+      try { const parsed = JSON.parse(source); upstream = providerDiagnostic(parsed?.error ?? parsed, true); } catch { /* Not JSON. */ }
+    }
+  }
+  return { ...(known.test(code) ? { code } : {}), reason: reasons.find(([pattern]) => pattern.test(message))?.[1] ?? 'unspecified',
+    ...(upstream ? { upstream } : {}),
+    ...(message ? { messageHash: createHash('sha256').update(message).digest('hex') } : {}) };
+}
+
+function safeRequestId(value: string | null, key: string): string | undefined {
+  return value && value !== key && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value) ? value : undefined;
+}
+// Never copy exception messages, URLs, headers, stacks, or arbitrary custom codes.
+function safeException(error: unknown): { errorType: string; causeCode?: string } {
+  const names = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AbortError', 'TimeoutError']);
+  const codes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+    'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT']);
+  let errorType = 'UnknownError', causeCode: string | undefined;
+  try {
+    let current = error as any;
+    if (names.has(current?.name)) errorType = current.name;
+    for (let depth = 0; current && depth < 4; depth++, current = current.cause) {
+      if (codes.has(current.code)) { causeCode = current.code; break; }
+    }
+  } catch { /* An exception can contain unsafe getters. */ }
+  return { errorType, ...(causeCode ? { causeCode } : {}) };
 }
 export interface AdapterDependencies {
   config: () => ResolvedConfig;
   apiKey: (config: ResolvedConfig) => Promise<string>;
   fetch?: typeof fetch;
-  diagnostic?: (event: Diagnostic) => void;
+  diagnostic?: (event: Diagnostic) => void | Promise<void>;
 }
 
 export function parseCatalog(raw: any): ModelConfig[] {
@@ -53,7 +117,7 @@ function providerErrorFields(error: unknown): string {
   const fields: string[] = [];
   for (const key of ['code', 'type', 'param', 'status']) {
     const value = source[key];
-    if (typeof value === 'string' && value) fields.push(`${key}=${value}`);
+    if (typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,64}$/.test(value)) fields.push(`${key}=${value}`);
     else if (typeof value === 'number' && Number.isFinite(value)) fields.push(`${key}=${value}`);
   }
   return fields.join(' ');
@@ -88,8 +152,10 @@ export class ClinePassAdapter extends LlmAdapter {
   constructor(private readonly deps: AdapterDependencies) { super(); }
   override providerInfo(provider: string) { return { id: provider, name: provider }; }
   override providerRetryPolicy() {
-    // No account/model switching. Partial output and malformed streams are never replayed automatically.
-    return resolveRetryPolicy({ mode: 'normal', maxRetries: 2, retryableCodes: ['RATE_LIMIT', 'SERVER_ERROR'] }, 'cline-pass');
+    // The host settles failed attempts separately and only executes successful tool calls.
+    // Do not retry inside this generator: that would concatenate partial responses.
+    return resolveRetryPolicy({ mode: 'normal', maxRetries: 2, retryableCodes: RETRYABLE_CODES,
+      backoff: { initialDelayMs: 1000, maxDelayMs: 10000, jitterRatio: 0.1 } }, 'cline-pass');
   }
   override async listModels(provider: string) {
     const config = this.deps.config();
@@ -131,6 +197,8 @@ export class ClinePassAdapter extends LlmAdapter {
     const start = Date.now();
     const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
     const diagnostic: Diagnostic = {
+      attemptId: randomUUID(), timestamp: new Date().toISOString(),
+      ...(options.sessionId ? { sessionHash: hash(options.sessionId) } : {}),
       routing: config.routing, routingVerified: false, model: options.model,
       requestedUpstream: config.routing === 'experimental-pin' ? config.upstream : undefined,
       elapsedMs: 0, outcome: 'error', promptHash: hash(request.messages), toolsHash: hash(request.tools ?? []),
@@ -143,13 +211,18 @@ export class ClinePassAdapter extends LlmAdapter {
     const details = new Map<string, Record<string, unknown>>();
     let textIndex: number | undefined, reasoningIndex: number | undefined;
     let done = false;
+    let stage = 'request';
     try {
       const response = await (this.deps.fetch ?? fetch)(`${BASE_URL}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { ...attributionHeaders(), Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Title': 'DSH Provider Extensions' },
         body: JSON.stringify(request),
       });
+      diagnostic.httpStatus = response.status;
+      const requestId = safeRequestId(response.headers.get('x-request-id') ?? response.headers.get('request-id'), key);
+      if (requestId) diagnostic.requestId = requestId;
       if (!response.ok) {
+        stage = 'http-error-body';
         const status = response.status;
         const code = status === 401 ? 'AUTH' : status === 403 ? 'SUBSCRIPTION_REQUIRED' : status === 429 ? 'RATE_LIMIT' : status >= 500 ? 'SERVER_ERROR' : 'BAD_REQUEST';
         const retry = response.headers.get('retry-after');
@@ -162,6 +235,7 @@ export class ClinePassAdapter extends LlmAdapter {
           let parsed: unknown;
           try { parsed = JSON.parse(body); } catch { parsed = undefined; }
           const error = parsed !== null && typeof parsed === 'object' && 'error' in parsed ? (parsed as { error?: unknown }).error : parsed;
+          diagnostic.providerError = providerDiagnostic(error);
           const fields = providerErrorFields(error);
           const text = config.diagnostics ? redactProviderMessage(providerErrorText(error)) : '';
           report = [fields, text && `: ${text}`].filter(Boolean).join(' ');
@@ -172,20 +246,28 @@ export class ClinePassAdapter extends LlmAdapter {
           { status, ...(Number.isFinite(delay) && delay > 0 ? { providerRetryAfterMs: delay } : {}) });
       }
       if (!response.body) throw new LlmError('ClinePass returned no response body.', 'PROTOCOL');
+      stage = 'stream-read';
       for await (const event of sse(response.body)) {
+        stage = 'stream-decode';
         if (event === '[DONE]') { done = true; break; }
         let raw: any;
         try { raw = JSON.parse(event); } catch { throw new LlmError('Invalid JSON in ClinePass stream.', 'PROTOCOL'); }
-        if (raw.error) throw new LlmError(streamRefusal(raw.error, config.diagnostics), 'STREAM_ERROR');
-        if (typeof raw.provider === 'string') diagnostic.observedUpstream = raw.provider;
+        if (raw.error) {
+          diagnostic.providerError = providerDiagnostic(raw.error);
+          throw new LlmError(streamRefusal(raw.error, config.diagnostics), streamErrorCode(raw.error));
+        }
+        if (typeof raw.provider === 'string' && safeRequestId(raw.provider, key)) diagnostic.observedUpstream = raw.provider;
         const reported = tokenUsage(raw.usage);
         if (reported) usage = reported;
         const choice = raw.choices?.find((c: any) => c.index === 0) ?? raw.choices?.[0];
-        if (!choice) continue;
+        if (!choice) { stage = 'stream-read'; continue; }
         // The API documents mid-stream failures as `choices[0].error` next to
         // `finish_reason: 'error'`, so name that refusal like the top-level one
         // instead of reporting an unknown finish reason.
-        if (choice.error) throw new LlmError(streamRefusal(choice.error, config.diagnostics), 'STREAM_ERROR');
+        if (choice.error) {
+          diagnostic.providerError = providerDiagnostic(choice.error);
+          throw new LlmError(streamRefusal(choice.error, config.diagnostics), streamErrorCode(choice.error));
+        }
         const delta = choice.delta ?? {};
         if (reason && (delta.content || delta.reasoning || delta.reasoning_content || delta.tool_calls?.length)) throw new LlmError('Content arrived after finish_reason.', 'PROTOCOL');
         for (const [type, value] of [['reasoning', delta.reasoning_content ?? delta.reasoning], ['text', delta.content]] as const) {
@@ -240,7 +322,9 @@ export class ClinePassAdapter extends LlmAdapter {
           reason = reasons[choice.finish_reason];
           if (!reason) throw new LlmError(`ClinePass returned an unsuccessful or unknown finish reason (${String(choice.finish_reason)}).`, 'STREAM_ERROR');
         }
+        stage = 'stream-read';
       }
+      stage = 'stream-finalize';
       if (!done || !reason) throw new LlmError('ClinePass stream ended before its terminal markers.', 'INCOMPLETE_STREAM');
       if (!blocks.size) throw new LlmError('ClinePass returned an empty response.', 'EMPTY_RESPONSE');
       for (const [index, block] of blocks) {
@@ -262,13 +346,24 @@ export class ClinePassAdapter extends LlmAdapter {
         },
       };
     } catch (error) {
-      if (signal.aborted) throw new LlmError('ClinePass request cancelled or timed out.', options.signal?.aborted ? 'ABORTED' : 'TIMEOUT');
-      if (error instanceof LlmError) throw error;
-      throw new LlmError('ClinePass transport failed; sensitive error details omitted.', 'TRANSPORT');
+      diagnostic.outcome = 'error';
+      diagnostic.failure = { stage, ...safeException(error), receivedOutput: blocks.size > 0 };
+      const context = `stage=${stage} type=${diagnostic.failure.errorType}${diagnostic.failure.causeCode ? ` cause=${diagnostic.failure.causeCode}` : ''} elapsedMs=${Date.now() - start} receivedOutput=${blocks.size > 0}`;
+      const transport = stage === 'request' || stage === 'stream-read' || stage === 'http-error-body';
+      const failure = signal.aborted
+        ? new LlmError(`ClinePass request cancelled or timed out (${context}).`, options.signal?.aborted ? 'ABORTED' : 'TIMEOUT')
+        : error instanceof LlmError ? error
+        : new LlmError(`ClinePass ${transport ? 'transport' : 'stream processing'} failed (${context}); sensitive error details omitted.`, transport ? 'TRANSPORT' : 'ADAPTER_ERROR');
+      diagnostic.failure.code = failure.code;
+      diagnostic.failure.retryable = RETRYABLE_CODES.includes(failure.code);
+      // This context survives in the host's durable llm/retry and turn/end records.
+      const safeMessage = failure.message.split(key).join('[redacted]');
+      throw new LlmError(`${safeMessage} [attempt=${diagnostic.attemptId}${diagnostic.requestId ? ` requestId=${diagnostic.requestId}` : ''} stage=${stage} receivedOutput=${blocks.size > 0}]`, failure.code,
+        { ...failure.failure, ...(diagnostic.requestId ? { requestId: ProviderRequestId(diagnostic.requestId) } : {}) });
     } finally {
       abort.abort();
       diagnostic.elapsedMs = Date.now() - start; diagnostic.usage = usage;
-      try { this.deps.diagnostic?.(diagnostic); } catch { /* Diagnostics cannot fail a model call. */ }
+      try { await this.deps.diagnostic?.(diagnostic); } catch { /* Diagnostics cannot fail a model call. */ }
     }
   }
 }

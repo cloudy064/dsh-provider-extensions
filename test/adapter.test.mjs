@@ -220,6 +220,73 @@ test('diagnostics contain no key or prompt and cannot interrupt completion', asy
   assert.ok(!JSON.stringify(diagnostic).includes('secret-test-key'));
 });
 
+test('transport failures retain only safe cause codes and request stage', async () => {
+  let diagnostic;
+  const error = new TypeError('secret-test-key https://private.invalid/Hello', {
+    cause: Object.assign(new Error('private socket information'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+  });
+  await assert.rejects(collect(adapter([], {}, {
+    fetch: async () => { throw error; }, diagnostic: e => { diagnostic = e; },
+  }).stream(options)), e => e.code === 'TRANSPORT' && /stage=request type=TypeError cause=UND_ERR_CONNECT_TIMEOUT/.test(e.message));
+  assert.deepEqual(diagnostic.failure, { stage: 'request', errorType: 'TypeError', causeCode: 'UND_ERR_CONNECT_TIMEOUT', receivedOutput: false, code: 'TRANSPORT', retryable: true });
+  assert.ok(!JSON.stringify(diagnostic).includes('private'));
+  assert.ok(!JSON.stringify(diagnostic).includes('secret-test-key'));
+  const custom = Object.assign(new Error('secret-test-key'), { name: 'secret-test-key', code: 'secret-test-key' });
+  custom.cause = custom;
+  await assert.rejects(collect(adapter([], {}, { fetch: async () => { throw custom; } }).stream(options)),
+    e => /type=UnknownError/.test(e.message) && !e.message.includes('secret-test-key'));
+});
+
+test('transient SSE failures are retryable; permanent failures and cancellation are not', async () => {
+  const policy = adapter([]).providerRetryPolicy();
+  assert.equal(policy.maxRetries, 2);
+  assert.equal(policy.initialDelayMs, 1000);
+  for (const [providerCode, expected] of [[500, 'SERVER_ERROR'], ['503', 'SERVER_ERROR'], ['server_error', 'SERVER_ERROR'], [429, 'RATE_LIMIT'], ['context_length_exceeded', 'STREAM_ERROR'], [401, 'STREAM_ERROR'], [402, 'STREAM_ERROR'], ['stream_initialization_failed', 'STREAM_ERROR']]) {
+    for (const nested of [false, true]) {
+      const error = { code: providerCode, message: 'Internal server error: secret-test-key Hello' };
+      let diagnostic;
+      const instance = adapter([choice({ reasoning: 'partial' }), nested ? { choices: [{ index: 0, error, finish_reason: 'error' }] } : { error }], {}, { diagnostic: e => { diagnostic = e; } });
+      await assert.rejects(collect(instance.stream(options)), e => e.code === expected && e.message.includes('attempt=') && !e.message.includes('secret-test-key'));
+      assert.equal(diagnostic.failure.retryable, policy.retryableCodes.includes(expected));
+      assert.equal(diagnostic.failure.receivedOutput, true);
+      assert.equal(diagnostic.providerError.reason, 'internal_server_error');
+      assert.match(diagnostic.providerError.messageHash, /^[a-f0-9]{64}$/);
+      assert.ok(!JSON.stringify(diagnostic).includes('secret-test-key'));
+      assert.ok(!JSON.stringify(diagnostic).includes('Hello'));
+    }
+  }
+  assert.ok(!policy.retryableCodes.includes('ABORTED'));
+  assert.ok(!policy.retryableCodes.includes('ADAPTER_ERROR'));
+});
+
+test('request IDs and failure facts survive into session errors and asynchronous diagnostics', async () => {
+  let recorded;
+  const instance = adapter([], {}, {
+    fetch: async () => new Response(frame({ error: { code: 500, message: 'upstream timed out' } }), { headers: { 'x-request-id': 'req-123' } }),
+    diagnostic: async event => { await Promise.resolve(); recorded = event; },
+  });
+  await assert.rejects(collect(instance.stream(options)), e => e.code === 'SERVER_ERROR' && e.failure.message.includes('requestId=req-123'));
+  assert.equal(recorded.requestId, 'req-123');
+  assert.equal(recorded.httpStatus, 200);
+  assert.equal(recorded.providerError.reason, 'upstream_timeout');
+  assert.equal(recorded.failure.code, 'SERVER_ERROR');
+  await assert.rejects(collect(adapter([{ error: { code: 500 } }], {}, { diagnostic: async () => { throw new Error('disk full'); } }).stream(options)), e => e.code === 'SERVER_ERROR');
+});
+
+test('stream read disconnect after output is distinguished from decoding failure', async () => {
+  let pulls = 0;
+  const chunks = [];
+  const broken = adapter([], {}, { fetch: async () => new Response(new ReadableStream({ pull(controller) {
+    if (pulls++ === 0) controller.enqueue(new TextEncoder().encode(frame(choice({ content: 'OK' }))));
+    else controller.error(Object.assign(new Error('secret-test-key'), { code: 'ECONNRESET' }));
+  } })) });
+  await assert.rejects(async () => { for await (const c of broken.stream(options)) chunks.push(c); },
+    e => e.code === 'TRANSPORT' && /stage=stream-read/.test(e.message) && /cause=ECONNRESET/.test(e.message) && /receivedOutput=true/.test(e.message));
+  assert.ok(chunks.some(c => c.type === 'text-delta'));
+  await assert.rejects(collect(adapter([{ choices: {} }]).stream(options)),
+    e => e.code === 'ADAPTER_ERROR' && /stage=stream-decode type=TypeError/.test(e.message));
+});
+
 test('DSH assembler replay envelope survives a reasoning-details tool round trip', async () => {
   const events = [choice({ reasoning_details: [{ index: 0, type: 'reasoning.encrypted', data: 'abc' }] }),
     choice({ reasoning_details: [{ index: 0, type: 'reasoning.encrypted', data: 'def' }], tool_calls: [{ index: 0, id: 't', function: { name: 'read', arguments: '{}' } }] }, 'tool_calls'), '[DONE]'];
@@ -254,9 +321,11 @@ test('provider is optional: add registers route and delete withdraws it', async 
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'cline-pass'));
     assert.deepEqual(ctx.llm.listConfigurableProviders().find(p => p.provider === 'cline-pass').settingsPath, ['profile']);
     await fork.update({ profile: { models: [{ id: 'cline-pass/test' }] } });
+    await fork.await();
     assert.ok((await ctx.llm.listProviders()).some(p => p.id === 'cline-pass'));
     assert.equal((await ctx.llm.listModels('cline-pass'))[0].id, 'cline-pass/test');
     await fork.update({});
+    await fork.await();
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'cline-pass'));
   } finally { await ctx.fiber.dispose(); }
 });

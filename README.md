@@ -6,7 +6,13 @@
 
 ## 适用 DSH 版本
 
-本版本（0.7.7）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
+本版本（0.7.9）适用于 **DSH `0.2.0-rc.2`**，`peerDependencies` 已按该版本声明。
+
+0.7.9 增加流中途 429/5xx、超时、传输失败及缺失结束标记的有限重试，复用 DSH 原生失败尝试与重试事件。每个模型步骤最多重试 2 次（共 3 次请求），通常等待约 1 秒、2 秒；取消立即终止等待。失败尝试不进入下一次请求历史，也不执行其中的工具；已成功步骤不重新执行。额外请求可能消耗订阅额度。认证、额度、上下文限制、内容过滤和未识别协议错误不自动重试。
+
+每次请求自动写入 `$DSH_HOME/logs/cline-pass-diagnostics.jsonl`（默认 `~/.dsh/logs/`）。记录尝试 ID、时间、会话/请求哈希、HTTP 状态、服务端请求 ID（若有）、阶段、耗时、用量及错误分类；原始错误说明仅保存哈希和可识别的原因分类，嵌套上游 JSON 错误也只提取这些字段。服务端没有给出具体原因时保留 `unspecified`。不保存请求正文、生成内容、凭据或原始响应体。日志达到 2 MiB 后轮转到 `.jsonl.1`，仅保留一个备份。DSH 会话日志的 `llm/retry` / `llm/retry-started` 记录重试次数、等待时间和最终结果，可用 `attempt` ID 对照本地日志。辅助标题等非 Agent-loop 调用不由此策略自动重试。
+
+0.7.8 为传输异常增加脱敏诊断：请求阶段、标准异常类型、白名单中的底层错误码、耗时、是否已输出内容。解析阶段的未识别异常单独标为 `ADAPTER_ERROR`，不再全部伪装成网络问题。这些字段直接出现在会话错误里，不需要开启详细诊断，也不包含异常原文、密钥、地址或请求内容。另修复提供方配置更新后的路由同步，并将锁定依赖及 pi-ai 对齐到 0.2.0 宿主。
 
 0.7.7 修复工具执行后的第二轮请求：保留 DSH 0.2 工具结果消息顶层的 `toolCallId`，发送为 `tool_call_id`，避免 ClinePass 返回 `stream_initialization_failed` / `Tool message must have tool_call_id`。
 
@@ -41,7 +47,7 @@ npm ci --ignore-scripts
 npm test
 npm run smoke
 npm pack
-dsh plugin --profile web add ./dsh-provider-extensions-0.7.0.tgz
+dsh plugin --profile web add ./dsh-provider-extensions-0.7.9.tgz
 ```
 
 安装命令会修改 DSH 的 web profile。安装后重启 DSH。0.2.0 的 Models 页已为仓库外插件声明 `settings.models.provider-card` 座位，本插件的卡片直接注册进该座位，**不需要任何宿主补丁**；提供方目录、添加、折叠和删除仍由宿主管理。发布包包含编译结果；请安装 tgz，勿直接链接开发目录。
@@ -76,7 +82,7 @@ dsh plugin --profile web add ./dsh-provider-extensions-0.7.0.tgz
 | `routing` | `sticky` | `default` 不加路由字段；`sticky` 发送稳定会话 ID；`experimental-pin` 额外发送单上游限制 |
 | `upstream` | 未设置 | experimental-pin 必填，使用实际上游 slug |
 | `timeoutMs` | `300000` | 单次 HTTP 请求的总时限，包含流式读取 |
-| `diagnostics` | `false` | 输出 token 统计、耗时、请求哈希和路由观察值 |
+| `diagnostics` | `false` | 在会话错误中额外显示尽力脱敏并截断的服务端说明；结构化请求摘要无论此开关状态都自动写入本地日志 |
 
 所有模型 ID 必须使用 `cline-pass/` 前缀；拒绝普通模型 ID。目录获取失败会明确报错，可配置手动列表；不会混入免费或按量计费模型。目录是公开推荐列表，不能证明当前账号的订阅权益。
 
@@ -90,7 +96,7 @@ dsh plugin --profile web add ./dsh-provider-extensions-0.7.0.tgz
 {"provider":{"only":["EXACT_UPSTREAM_SLUG"],"allow_fallbacks":false}}
 ```
 
-这是实验性约束请求。插件无法在不开放上游控制的服务端上强制固定，也无法阻止服务端内部切换实例。明确的服务端失败会报错，不会删除限制后偷偷重试。仅 429 和 HTTP 5xx 交给 DSH 以最多两次的策略重试；中途断流不自动重放。
+这是实验性约束请求。插件无法在不开放上游控制的服务端上强制固定，也无法阻止服务端内部切换实例。重试保留同一模型和上游限制，不会删除限制或切换账号。可恢复错误交给 DSH 按上述有限策略重试；不在同一输出流中拼接失败与重试的内容。
 
 ## 验证
 

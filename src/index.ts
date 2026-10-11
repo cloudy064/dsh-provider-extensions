@@ -1,4 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { LlmError, type AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm';
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment';
 import '@deepseek-ai/dsh-credentials';
@@ -7,10 +9,17 @@ import '@deepseek-ai/dsh-settings';
 import { Config, PROVIDER, resolveConfig, unwrapConfig, type ConfigInput } from './config.js';
 import { ClinePassAdapter, discoverCatalog } from './adapter.js';
 import { CommandCodeAdapter, discoverCommandCode, validateCommandCode } from './commandcode.js';
+import { writeDiagnostic } from './diagnostics.js';
 
 export { Config, ClinePassAdapter };
 export const name = 'llm-cline-pass';
 export const inject = ['llm'];
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'loader/volatile-update'(paths: readonly (readonly string[])[]): void;
+  }
+}
 
 /** DSH 0.2.0 settings service: `SettingsForms.configure(presentation, owner)`. */
 interface SettingsFormsLike {
@@ -40,6 +49,8 @@ export function apply(ctx: Context, config: ConfigInput = {}): void {
   // entry id is the settings namespace that page dispatches on.
   const settingsNs = (ctx.fiber as { entry?: { options?: { id?: string } } } | undefined)?.entry?.options?.id ?? name;
   const current = () => unwrapConfig(config);
+  const diagnosticPath = join(launchEnvironmentOf(ctx).get('DSH_HOME')?.value ?? join(homedir(), '.dsh'), 'logs', 'cline-pass-diagnostics.jsonl');
+  let logWarningShown = false;
   resolveConfig(current());
   const commandAdapter = new CommandCodeAdapter(() => current().commandcode ?? {}, async ref => {
     const key = (await ctx.get('credentials')?.resolve(credentialRef(ref)))?.value ?? launchEnvironmentOf(ctx).get(ref)?.value;
@@ -55,7 +66,12 @@ export function apply(ctx: Context, config: ConfigInput = {}): void {
       if (!key) throw new LlmError(`Configure ${resolved.apiKeyEnv} in DSH credentials or the launch environment.`, 'MISSING_CREDENTIAL');
       return key;
     },
-    diagnostic: event => { if (resolveConfig(current()).diagnostics) ctx.logger.info(JSON.stringify(event)); },
+    diagnostic: async event => {
+      try { await writeDiagnostic(diagnosticPath, event); }
+      catch {
+        if (!logWarningShown) { logWarningShown = true; ctx.logger.warn('ClinePass diagnostic file could not be written; session failure and retry records remain available.'); }
+      }
+    },
   });
   // Keep a dormant directory entry for the native Provider dropdown. The
   // optional profile gives the native UI a concrete add/delete address.
@@ -95,6 +111,8 @@ export function apply(ctx: Context, config: ConfigInput = {}): void {
     }
   };
   syncRoute();
+  // The loader updates volatile references without remounting the plugin.
+  ctx.on('loader/volatile-update', syncRoute);
   ctx.llm.registerModelDiscovery(settingsNs, (request, signal) => request.provider === 'commandcode' ? discoverCommandCode(fetch, signal) : discoverCatalog(fetch, signal));
   ctx.inject(['settings'], settingsCtx => {
     const settings = settingsCtx.settings as unknown as SettingsFormsLike;

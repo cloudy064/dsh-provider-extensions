@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { LlmError, type ContentBlock, type GenerateOptions, type TokenUsage } from '@deepseek-ai/dsh-llm';
 import { subscriptionModel, type ResolvedConfig } from './config.js';
 
-function text(blocks: ContentBlock[]): string {
+function text(blocks: readonly ContentBlock[]): string {
   return blocks.map(block => {
     if (block.type === 'text') return block.text;
     throw new LlmError('Unsupported content block; this adapter currently accepts text and tool calls only.', 'UNSUPPORTED_CONTENT');
@@ -21,7 +21,10 @@ export function buildRequest(options: GenerateOptions, config: ResolvedConfig): 
       messages.push({ role: 'tool', tool_call_id: toolMessage.toolCallId, content: text(message.content) });
       continue;
     }
-    const results = message.content.filter(b => b.type === 'tool-result');
+    // Legacy stored histories can still contain the pre-0.2 block shape.
+    type LegacyToolResult = { type: 'tool-result'; toolCallId: string; content: readonly ContentBlock[] };
+    const results = (message.content as readonly (ContentBlock | LegacyToolResult)[])
+      .filter((b): b is LegacyToolResult => b.type === 'tool-result');
     if (results.length) {
       if (results.length !== message.content.length) throw new LlmError('Mixed tool-result and text message is unsupported.', 'UNSUPPORTED_CONTENT');
       for (const result of results) messages.push({ role: 'tool', tool_call_id: result.toolCallId, content: text(result.content) });

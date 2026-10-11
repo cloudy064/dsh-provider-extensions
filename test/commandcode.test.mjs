@@ -25,8 +25,10 @@ test('commandcode is dormant by default and can be added/deleted independently',
     assert.ok(ctx.llm.listConfigurableProviders().some(p => p.provider === 'commandcode'));
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'commandcode'));
     await fork.update({ commandcode: { models: [{ id: 'gpt-test' }] } });
+    await fork.await();
     assert.equal((await ctx.llm.listModels('commandcode'))[0].id, 'gpt-test');
     await fork.update({});
+    await fork.await();
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'commandcode'));
   } finally { await ctx.fiber.dispose(); }
 });

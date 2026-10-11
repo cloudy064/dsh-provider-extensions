@@ -46,7 +46,7 @@ const Profile = z.object({
     .description('ClinePass routing hints are unverified. experimental-pin sends a single-provider allowlist.'),
   upstream: z.string().description('Exact upstream slug for experimental-pin; never a model ID.'),
   timeoutMs: z.number().min(1000).max(1800000).default(300000),
-  diagnostics: z.boolean().default(false).description('Log token counts and timing; never prompts or keys.'),
+  diagnostics: z.boolean().default(false).description('Show redacted provider error text; structured request summaries are always logged locally.'),
 });
 // Object schemas default to {}, which would make a dormant provider configured.
 delete Profile.meta.default;
@@ -56,8 +56,7 @@ delete CommandProfile.meta.default;
 // page: `SettingsForms` derives an editable form from the volatile nodes of a
 // live entry's Config and refuses writes outside them, and the loader commits
 // a volatile-only change into the running reference instead of remounting.
-// `extra('volatile', true)` is what `Schema#volatile()` sets, used directly
-// because the 0.1.5 typings this project compiles against predate that method.
+// `extra('volatile', true)` is the metadata used by `Schema#volatile()`.
 export const Config = (z.object({ ...Profile.dict, profile: Profile, commandcode: CommandProfile }) as unknown as { extra(key: string, value: boolean): z<Config> }).extra('volatile', true);
 export const PROVIDER = 'cline-pass';
 export const BASE_URL = 'https://api.cline.bot/api/v1';
