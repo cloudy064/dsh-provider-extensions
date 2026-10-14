@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   LlmAdapter, LlmError, attributionHeaders, assertUsableApiKey, resolveRetryPolicy,
+  CONTEXT_WINDOW_EXCEEDED_CODE, isContextWindowExceededError,
   type GenerateOptions, type StreamChunk, type ContentBlock, type FinishReason,
   type TokenUsage, type LlmResolvedModelInfo, ToolCallId, ProviderRequestId,
 } from '@deepseek-ai/dsh-llm';
@@ -17,9 +18,25 @@ export interface Diagnostic {
   failure?: { stage: string; errorType: string; causeCode?: string; receivedOutput: boolean; code?: string; retryable?: boolean };
 }
 const RETRYABLE_CODES = ['RATE_LIMIT', 'SERVER_ERROR', 'TIMEOUT', 'TRANSPORT', 'INCOMPLETE_STREAM'];
+// A conservative compaction budget, not a claim about an upstream model's limit.
+const DEFAULT_CONTEXT_WINDOW = 262144;
+const CONTEXT_HELP = 'ClinePass context window exceeded. Compact the conversation or start a new session with a summary.';
+
+function contextOverflow(error: unknown, nested = false): boolean {
+  const raw = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  if (isContextWindowExceededError(`${providerErrorFields(error)} ${providerErrorText(error)}`)) return true;
+  if (!nested && raw.metadata && typeof raw.metadata === 'object') {
+    const source = (raw.metadata as Record<string, unknown>).raw;
+    if (typeof source === 'string' && source.length <= 4096) {
+      try { const parsed = JSON.parse(source); return contextOverflow(parsed?.error ?? parsed, true); } catch { /* Not JSON. */ }
+    }
+  }
+  return false;
+}
 
 /** Only known status/error identifiers can affect retry decisions. */
 function streamErrorCode(error: unknown): string {
+  if (contextOverflow(error)) return CONTEXT_WINDOW_EXCEEDED_CODE;
   if (!error || typeof error !== 'object') return 'STREAM_ERROR';
   const value = error as Record<string, unknown>;
   const code = String(value.code ?? value.status ?? '').toLowerCase();
@@ -144,7 +161,7 @@ function redactProviderMessage(text: string): string {
 function streamRefusal(error: unknown, diagnostics: boolean): string {
   const fields = providerErrorFields(error);
   const text = diagnostics ? redactProviderMessage(providerErrorText(error)) : '';
-  return `ClinePass reported an error within the stream${fields ? ` (${fields})` : ''}${text ? `: ${text}` : '.'}`;
+  return `${contextOverflow(error) ? CONTEXT_HELP : 'ClinePass reported an error within the stream'}${fields ? ` (${fields})` : ''}${text ? `: ${text}` : '.'}`;
 }
 
 export class ClinePassAdapter extends LlmAdapter {
@@ -177,7 +194,7 @@ export class ClinePassAdapter extends LlmAdapter {
     const entry = config.models.find(m => m.id === model);
     return {
       provider, id: model, name: entry?.name ?? model, inputModalities: ['text'],
-      ...(entry?.contextWindow ? { context: { contextWindow: entry.contextWindow } } : {}),
+      context: { contextWindow: entry?.contextWindow ?? DEFAULT_CONTEXT_WINDOW },
       ...(entry?.maxTokens ? { defaultMaxTokens: entry.maxTokens } : {}),
     };
   }
@@ -224,7 +241,7 @@ export class ClinePassAdapter extends LlmAdapter {
       if (!response.ok) {
         stage = 'http-error-body';
         const status = response.status;
-        const code = status === 401 ? 'AUTH' : status === 403 ? 'SUBSCRIPTION_REQUIRED' : status === 429 ? 'RATE_LIMIT' : status >= 500 ? 'SERVER_ERROR' : 'BAD_REQUEST';
+        let code = status === 401 ? 'AUTH' : status === 403 ? 'SUBSCRIPTION_REQUIRED' : status === 429 ? 'RATE_LIMIT' : status >= 500 ? 'SERVER_ERROR' : 'BAD_REQUEST';
         const retry = response.headers.get('retry-after');
         const delay = retry ? (/^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now()) : 0;
         // Report the provider's structural error fields; its free text follows
@@ -236,13 +253,14 @@ export class ClinePassAdapter extends LlmAdapter {
           try { parsed = JSON.parse(body); } catch { parsed = undefined; }
           const error = parsed !== null && typeof parsed === 'object' && 'error' in parsed ? (parsed as { error?: unknown }).error : parsed;
           diagnostic.providerError = providerDiagnostic(error);
+          if (contextOverflow(error)) code = CONTEXT_WINDOW_EXCEEDED_CODE;
           const fields = providerErrorFields(error);
           const text = config.diagnostics ? redactProviderMessage(providerErrorText(error)) : '';
           report = [fields, text && `: ${text}`].filter(Boolean).join(' ');
         } catch {
           await response.body?.cancel().catch(() => {});
         }
-        throw new LlmError(`ClinePass HTTP ${status} (${code})${report ? ` [${report}]` : ''}; response body omitted to protect credentials and prompts.`, code,
+        throw new LlmError(`${code === CONTEXT_WINDOW_EXCEEDED_CODE ? CONTEXT_HELP + ' ' : ''}ClinePass HTTP ${status} (${code})${report ? ` [${report}]` : ''}; response body omitted to protect credentials and prompts.`, code,
           { status, ...(Number.isFinite(delay) && delay > 0 ? { providerRetryAfterMs: delay } : {}) });
       }
       if (!response.body) throw new LlmError('ClinePass returned no response body.', 'PROTOCOL');

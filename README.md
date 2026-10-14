@@ -86,7 +86,7 @@ dsh plugin --profile web add ./dsh-provider-extensions-0.7.9.tgz
 
 所有模型 ID 必须使用 `cline-pass/` 前缀；拒绝普通模型 ID。目录获取失败会明确报错，可配置手动列表；不会混入免费或按量计费模型。目录是公开推荐列表，不能证明当前账号的订阅权益。
 
-模型目录不含可核验的数值上下文限制，因此插件不从描述文字推测它。需要控制压缩阈值/输出上限时，使用 `models[].contextWindow` 和 `models[].maxTokens`。当前支持文本、工具调用与思考内容，不声明视觉支持；未由 DSH 转成文本的图片/文件块会明确拒绝。
+模型目录不含可核验的数值上下文限制，因此插件不从描述文字推测它。未配置容量时，插件向宿主提供 262144 token 的保守压缩预算（不是上游容量声明），避免缺少容量信息使自动压缩失效。需要控制压缩阈值/输出上限时，使用 `models[].contextWindow` 和 `models[].maxTokens`。当前支持文本、工具调用与思考内容，不声明视觉支持；未由 DSH 转成文本的图片/文件块会明确拒绝。
 
 设置对后续调用生效；已准备的调用保留其配置快照。会话标识从 DSH sessionId 确定性生成，重试保持一致；标题和压缩请求使用各自的标识。没有 sessionId 时不伪造全局共用标识。
 
@@ -146,3 +146,5 @@ npm run probe -- --live --model cline-pass/deepseek-v4-flash --upstream EXACT_UP
 - [DSH 订阅插件参考](https://github.com/V1ki/dsh-plugin-subscriptions)
 - [DSH 官方：Models 扩展接口](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/client/ui-settings-models/README.md)：通过 `registerConfigurableProviders` 注册候选项，`settings.models.provider-card` 座位渲染适配器卡片，`settings.mutate` 写入表单，`llm.discoverModels` 获取模型目录。
 - [OpenRouter 路由参数](https://openrouter.ai/docs/guides/routing/provider-selection)与[会话黏性](https://openrouter.ai/docs/guides/best-practices/prompt-caching)：仅作候选协议参考，不是 ClinePass 能力承诺。
+
+上下文超限（包括 HTTP 错误、SSE 顶层/choices 错误及 metadata.raw 内的上游错误）映射为宿主标准 `CONTEXT_WINDOW_EXCEEDED`，由宿主压缩插件执行有界恢复，而不是原样重试。即使关闭 diagnostics，也会提示压缩会话或用摘要新建会话，不显示上游原始文本。自动恢复依赖宿主启用压缩服务；插件不会自行截断历史或丢弃工具结果。

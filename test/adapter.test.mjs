@@ -173,7 +173,7 @@ test('provider refusal names its cause while free text stays behind diagnostics'
 });
 test('a documented mid-stream error names its code and unknown finish reasons name themselves', async () => {
   const nested = [{ choices: [{ index: 0, finish_reason: 'error', error: { code: 'context_length_exceeded', message: 'The input exceeds the model maximum context length.' } }] }];
-  await assert.rejects(collect(adapter(nested).stream(options)), e => e.code === 'STREAM_ERROR'
+  await assert.rejects(collect(adapter(nested).stream(options)), e => e.code === 'CONTEXT_WINDOW_EXCEEDED'
     && e.message.includes('code=context_length_exceeded') && !e.message.includes('exceeds'));
   await assert.rejects(collect(adapter(nested, { diagnostics: true }).stream(options)), e => e.message.includes('exceeds'));
   await assert.rejects(collect(adapter([choice({}, 'content_filter'), '[DONE]']).stream(options)), e => e.message.includes('content_filter'));
@@ -241,7 +241,7 @@ test('transient SSE failures are retryable; permanent failures and cancellation 
   const policy = adapter([]).providerRetryPolicy();
   assert.equal(policy.maxRetries, 2);
   assert.equal(policy.initialDelayMs, 1000);
-  for (const [providerCode, expected] of [[500, 'SERVER_ERROR'], ['503', 'SERVER_ERROR'], ['server_error', 'SERVER_ERROR'], [429, 'RATE_LIMIT'], ['context_length_exceeded', 'STREAM_ERROR'], [401, 'STREAM_ERROR'], [402, 'STREAM_ERROR'], ['stream_initialization_failed', 'STREAM_ERROR']]) {
+  for (const [providerCode, expected] of [[500, 'SERVER_ERROR'], ['503', 'SERVER_ERROR'], ['server_error', 'SERVER_ERROR'], [429, 'RATE_LIMIT'], ['context_length_exceeded', 'CONTEXT_WINDOW_EXCEEDED'], [401, 'STREAM_ERROR'], [402, 'STREAM_ERROR'], ['stream_initialization_failed', 'STREAM_ERROR']]) {
     for (const nested of [false, true]) {
       const error = { code: providerCode, message: 'Internal server error: secret-test-key Hello' };
       let diagnostic;
@@ -328,4 +328,41 @@ test('provider is optional: add registers route and delete withdraws it', async 
     await fork.await();
     assert.ok(!(await ctx.llm.listProviders()).some(p => p.id === 'cline-pass'));
   } finally { await ctx.fiber.dispose(); }
+});
+
+
+test('context overflow reaches host recovery for HTTP and both SSE shapes without leaking text', async () => {
+  const errors = [
+    { code: 'context_length_exceeded' },
+    { code: 'stream_initialization_failed', message: 'Maximum context length exceeded: private-prompt' },
+    { code: 'stream_initialization_failed', metadata: { raw: JSON.stringify({ error: { message: 'Input exceeds the model context window: private-prompt' } }) } },
+  ];
+  for (const error of errors) {
+    for (const shape of ['http', 'top', 'choice']) {
+      let diagnostic;
+      const instance = adapter(shape === 'top' ? [{ error }] : [{ choices: [{ index: 0, error, finish_reason: 'error' }] }], {}, {
+        ...(shape === 'http' ? { fetch: async () => Response.json({ error }, { status: 400 }) } : {}),
+        diagnostic: value => { diagnostic = value; },
+      });
+      await assert.rejects(collect(instance.stream(options)), e => e.code === 'CONTEXT_WINDOW_EXCEEDED'
+        && e.message.includes('Compact the conversation') && !e.message.includes('private-prompt'));
+      assert.equal(diagnostic.failure.retryable, false, 'ordinary retries must not replay an oversized request');
+      assert.ok(!JSON.stringify(diagnostic).includes('private-prompt'));
+    }
+  }
+  for (const error of [
+    { code: 'stream_initialization_failed', message: 'Provider unavailable' },
+    { code: 400, message: 'Invalid context length parameter' },
+    { metadata: { raw: '{invalid' } },
+  ]) await assert.rejects(collect(adapter([{ error }]).stream(options)), e => e.code === 'STREAM_ERROR');
+});
+
+test('resolved and prepared models always supply a conservative compaction budget; explicit limits win', async () => {
+  const fallback = adapter([]);
+  assert.equal((await fallback.resolveModel(options.provider, options.model)).context.contextWindow, 262144);
+  assert.equal((await fallback.prepareCall(options.provider, options.model)).model.context.contextWindow, 262144);
+  const configured = adapter([], { models: [{ id: options.model, contextWindow: 1000000, maxTokens: 8192 }] });
+  const info = await configured.resolveModel(options.provider, options.model);
+  assert.equal(info.context.contextWindow, 1000000);
+  assert.equal(info.defaultMaxTokens, 8192);
 });
